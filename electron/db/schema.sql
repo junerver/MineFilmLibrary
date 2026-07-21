@@ -1,5 +1,5 @@
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+-- Reference only — runtime DDL lives in electron/db/migrations/0001-init.ts (inlined).
+-- Kept here for dev readability. Do NOT load this file at runtime.
 
 CREATE TABLE IF NOT EXISTS actors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

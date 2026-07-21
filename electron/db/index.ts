@@ -30,8 +30,12 @@ export function openDb(dbPath?: string): Database.Database {
   let current: { version: number } | undefined;
   try {
     current = instance.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number } | undefined;
-  } catch {
-    current = undefined; // brand-new db, schema_version table doesn't exist yet
+  } catch (err: unknown) {
+    // Only swallow the 'no such table' error expected on a brand-new DB.
+    // Other errors (corruption, I/O) must propagate.
+    const msg = String((err as { message?: string })?.message ?? err);
+    if (!/no such table/i.test(msg)) throw err;
+    current = undefined;
   }
   if (!current || current.version < 1) migration0001(instance);
   return instance;

@@ -1,0 +1,18 @@
+appId: io.github.minefilm.library
+productName: MineFilmLibrary
+directories:
+  output: release
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asarUnpack:
+  - node_modules/better-sqlite3/build/Release/better_sqlite3.node
+win:
+  target:
+    - nsis
+    - zip
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true

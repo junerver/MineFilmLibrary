@@ -42,7 +42,8 @@ export function parseFilmDirName(raw: string): ParsedDir {
   while (true) {
     const tagM = TAG_RE.exec(s);
     if (!tagM) break;
-    tags.push(tagM[1].trim());
+    const v = tagM[1].trim();
+    if (v) tags.push(v);
     s = s.slice(tagM[0].length);
   }
 

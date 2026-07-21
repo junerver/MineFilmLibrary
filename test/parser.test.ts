@@ -40,6 +40,13 @@ describe('parseFilmDirName', () => {
     expect(r.tags).toEqual(['FHD', '4K']);
     expect(r.title).toBe('T');
   });
+  it('skips empty placeholder brackets in tags', () => {
+    const r = parseFilmDirName('CJOD-295 [ ] [   ] [FHD] T');
+    expect(r.code).toBe('CJOD-295');
+    expect(r.tags).toEqual(['FHD']);
+    expect(r.title).toBe('T');
+    expect(r.scan_status).toBe('parsed');
+  });
   it('no code -> partial', () => {
     const r = parseFilmDirName('Some Title Only');
     expect(r.code).toBeNull();

@@ -32,7 +32,7 @@ export default function FilmDetailPage() {
       }
     }).catch((e: unknown) => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' }));
     mfl().files.listByFilm(n).then((r: FilmFileRow[]) => setFiles(r)).catch((e: unknown) => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' }));
-  }, [id, toast]);
+  }, [id]);
 
   if (!film) return <div>加载中…</div>;
 

@@ -62,12 +62,14 @@ describe('db migration 0001', () => {
     }
   });
 
-  it('is idempotent — second open keeps version 1', () => {
+  it('is idempotent — re-opening keeps applied version at top of chain', () => {
     openDbForTestTracked(dbPath);
     const db = new Database(dbPath);
     openedDbs.push(db);
-    const row = db.prepare('SELECT version FROM schema_version').get() as { version: number };
-    expect(row.version).toBe(1);
+    // openDbForTest 跑完 0001→0002→0003 整条迁移链，所以版本落在最高 3。
+    // 重开一次（这里用裸 Database 只读不跑迁移）也仍是 3——保证迁移不会回退版本。
+    const row = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    expect(row.version).toBe(3);
   });
 
   it('foreign keys enforce cascade', () => {
@@ -80,5 +82,47 @@ describe('db migration 0001', () => {
     db.prepare('DELETE FROM films WHERE id=1').run();
     const c = db.prepare('SELECT COUNT(*) n FROM film_files WHERE film_id=1').get() as { n: number };
     expect(c.n).toBe(0);
+  });
+});
+
+describe('db migration 0002', () => {
+  it('creates actor_aliases table + films.code_count column', () => {
+    const db = openDbForTestTracked(dbPath);
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    expect(tables.map(t => t.name)).toContain('actor_aliases');
+    const cols = db.prepare('PRAGMA table_info(films)').all() as { name: string }[];
+    expect(cols.map(c => c.name)).toContain('code_count');
+    // 默认值是 0。
+    const now = Date.now();
+    db.prepare(`INSERT INTO films(raw_dir_name, abs_path, parent_dir_name, scan_status, fs_mtime_ms, created_at, updated_at) VALUES(?,?,?,?,?,?,?)`)
+      .run('d', '/x/d', 'p', 'unknown', now, now, now);
+    const f = db.prepare('SELECT code_count FROM films WHERE id=1').get() as { code_count: number };
+    expect(f.code_count).toBe(0);
+    // schema_version 在 openDbForTest 跑完 0001→0002→0003 后应停在最新 3。
+    const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    expect(v.version).toBe(3);
+  });
+
+  it('is idempotent — re-open keeps version 3 (full migration chain)', () => {
+    openDbForTestTracked(dbPath);
+    const db = openDbForTestTracked(dbPath);
+    const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    // 重开跑完整链，最新版本应停在 3（0003 现在 final）。
+    expect(v.version).toBe(3);
+  });
+});
+
+describe('db migration 0003', () => {
+  it('adds actors.notes column + bumps schema_version to 3', () => {
+    const db = openDbForTestTracked(dbPath);
+    const cols = db.prepare('PRAGMA table_info(actors)').all() as { name: string }[];
+    expect(cols.map(c => c.name)).toContain('notes');
+    const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    expect(v.version).toBe(3);
+    // 默认 NULL，不破坏现有行。
+    const now = Date.now();
+    db.prepare('INSERT INTO actors(name, raw_dir_name, created_at, updated_at) VALUES(?,?,?,?)').run('X', '0-X', now, now);
+    const a = db.prepare('SELECT notes FROM actors WHERE name=?').get('X') as { notes: string | null };
+    expect(a.notes).toBeNull();
   });
 });

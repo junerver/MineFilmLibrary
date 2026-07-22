@@ -14,6 +14,12 @@ describe('parseParentDirName', () => {
   it('no prefix genre-first', () => {
     expect(parseParentDirName('剧情', { defaultType: 'genre' })).toEqual({ parent_type: 'genre', name: '剧情' });
   });
+  // 平铺根扫描会传入空字符串作为 parentDirName——早先 .trim() 会吞掉空格但
+  // 这里需要保证 null 而不是空串被返回，否则 runScan 会以空串 name 去 upsert actor。
+  it('empty / whitespace returns name=null (flat-root support)', () => {
+    expect(parseParentDirName('', { defaultType: 'actor' })).toEqual({ parent_type: 'actor', name: null });
+    expect(parseParentDirName('   ', { defaultType: 'genre' })).toEqual({ parent_type: 'genre', name: null });
+  });
 });
 
 describe('parseFilmDirName', () => {

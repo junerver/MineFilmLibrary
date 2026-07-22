@@ -6,6 +6,7 @@ import { registerFileIpc } from './files';
 import { registerCoverIpc } from './cover';
 import { registerExportIpc } from './export';
 import { registerSettingsIpc } from './settings';
+import { registerScrapeIpc } from './scrape';
 
 export function registerAllIpc() {
   registerLibraryIpc();
@@ -16,4 +17,5 @@ export function registerAllIpc() {
   registerCoverIpc();
   registerExportIpc();
   registerSettingsIpc();
+  registerScrapeIpc();
 }

@@ -21,7 +21,7 @@ export default function TrashPage() {
         <tbody>
           {rows.map(r => (
             <tr key={r.id}>
-              <td>{r.code ?? ''}</td>
+              <td>{r.code ? r.code.toUpperCase() : ''}</td>
               <td>{r.title ?? ''}</td>
               <td style={{ display: 'flex', gap: 4 }}>
                 <button onClick={() => { mfl().library.restore(r.id).then(() => setTick(t => t + 1)); }}>恢复</button>

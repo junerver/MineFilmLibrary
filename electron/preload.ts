@@ -14,10 +14,15 @@ contextBridge.exposeInMainWorld('mfl', {
   },
   actors: {
     list: () => invoke('actors:list'),
-    create: (name: string, raw?: string, cat?: string) => invoke('actors:create', name, raw, cat),
+    create: (name: string, raw?: string, cat?: string, notes?: string) => invoke('actors:create', name, raw, cat, notes),
     update: (id: number, patch: any) => invoke('actors:update', id, patch),
     delete: (id: number) => invoke('actors:delete', id),
     films: (id: number) => invoke('actors:films', id),
+    quickFind: (q: string) => invoke('actors:quickFind', q),
+    listAliases: (id: number) => invoke('actors:listAliases', id),
+    addAlias: (id: number, alias: string) => invoke('actors:addAlias', id, alias),
+    removeAlias: (alias: string) => invoke('actors:removeAlias', alias),
+    merge: (fromId: number, toId: number) => invoke('actors:merge', fromId, toId),
   },
   genres: {
     list: () => invoke('genres:list'),
@@ -57,5 +62,23 @@ contextBridge.exposeInMainWorld('mfl', {
   settings: {
     get: () => invoke('settings:get'),
     set: (k: string, v: string) => invoke('settings:set', k, v),
+  },
+  scrape: {
+    javbus: (filmId: number) => invoke('scrape:javbus', filmId),
+    javbusBatch: (filmIds: number[], concurrency?: number) => invoke('scrape:javbusBatch', filmIds, concurrency),
+    cancelBatch: () => invoke('scrape:cancelBatch'),
+    getBatchStatus: () => invoke('scrape:getBatchStatus'),
+    openLogDir: () => invoke('scrape:openLogDir'),
+    getLogPath: () => invoke('scrape:getLogPath'),
+    onProgress: (cb: (p: any) => void) => {
+      const h = (_e: unknown, payload: any) => cb(payload);
+      ipcRenderer.on('scrape:progress', h);
+      return () => ipcRenderer.removeListener('scrape:progress', h);
+    },
+    onBatchProgress: (cb: (p: any) => void) => {
+      const h = (_e: unknown, payload: any) => cb(payload);
+      ipcRenderer.on('scrape:batchProgress', h);
+      return () => ipcRenderer.removeListener('scrape:batchProgress', h);
+    },
   },
 });

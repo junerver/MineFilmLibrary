@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { getDb } from './db';
 import { registerAllIpc } from './ipc/registry';
+import { initLogger, info } from './util/logger';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -26,6 +27,8 @@ async function createWindow() {
 }
 
 app.whenReady().then(() => {
+  initLogger(app.getPath('userData'));
+  info('main', `app ready dev=${isDev} userData=${app.getPath('userData')}`);
   getDb();
   registerAllIpc();
   createWindow();

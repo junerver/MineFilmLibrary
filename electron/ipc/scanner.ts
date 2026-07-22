@@ -42,10 +42,18 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
       else getDb().prepare('UPDATE scan_roots SET last_incremental_scan_at=? WHERE id=?').run(finished, rootId);
       getDb().prepare('UPDATE scan_runs SET finished_at=?, dir_seen=?, dir_added=?, dir_updated=?, dir_removed=?, status=? WHERE id=?')
         .run(finished, stats.dir_seen, stats.dir_added, stats.dir_updated, stats.dir_removed, 'done', runId);
+      // 终止事件：让前端的 useScanProgress 把进度条清掉。
+      // 把 current/total 设成最终值，万一前端先收到 'done' 时显示一下"扫描完成"也能拿到合理数字。
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send(progressKey, { runId, stage: 'done', current: stats.dir_seen, total: stats.dir_seen, currentPath: '' });
+      }
       return { ok: true, stats };
     } catch (err: any) {
       errorMessage = err.message;
       getDb().prepare('UPDATE scan_runs SET finished_at=?, status=?, error_message=? WHERE id=?').run(nowMs(), 'error', errorMessage, runId);
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send(progressKey, { runId, stage: 'error', current: 0, total: 0, currentPath: '', errorMessage });
+      }
       return { ok: false, error: errorMessage };
     }
   }

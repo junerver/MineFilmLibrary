@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { MflApi } from '../api';
 import type { FilmFilter, FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
@@ -8,31 +9,235 @@ import { useToast } from '../components/Toaster';
 // Resolve the IPC bridge live (see FilterBar for rationale).
 const mfl = (): MflApi => (window as any).mfl;
 
+const PAGE_SIZE = 1000;
+// 进详情前保存主内容区 scrollTop，返回时恢复（Layout 主区 id=mfl-main-scroll）。
+const LIST_SCROLL_KEY = 'mfl:libraryListScroll';
+
+type SortBy = NonNullable<FilmFilter['sort_by']>;
+
+function parseSortBy(raw: string | null): SortBy {
+  if (raw === 'code' || raw === 'actors' || raw === 'title' || raw === 'updated_at' || raw === 'fs_mtime_ms') return raw;
+  return 'updated_at';
+}
+
+function parseSortDir(raw: string | null): 'asc' | 'desc' {
+  return raw === 'asc' ? 'asc' : 'desc';
+}
+
+function filterFromParams(sp: URLSearchParams): FilmFilter {
+  const page = Math.max(1, Number(sp.get('page') || '1') || 1);
+  return {
+    page,
+    page_size: PAGE_SIZE,
+    sort_by: parseSortBy(sp.get('sort_by')),
+    sort_dir: parseSortDir(sp.get('sort_dir')),
+    q: sp.get('q') ?? undefined,
+  };
+}
+
+function paramsFromFilter(f: FilmFilter): URLSearchParams {
+  const next = new URLSearchParams();
+  if (f.q) next.set('q', f.q);
+  if (f.page && f.page !== 1) next.set('page', String(f.page));
+  if (f.sort_by && f.sort_by !== 'updated_at') next.set('sort_by', f.sort_by);
+  if (f.sort_dir) next.set('sort_dir', f.sort_dir);
+  if (f.sort_by === 'updated_at' && f.sort_dir === 'desc') next.delete('sort_dir');
+  return next;
+}
+
+function getMainScrollEl(): HTMLElement | null {
+  return document.getElementById('mfl-main-scroll');
+}
+
 export default function LibraryPage() {
   const toast = useToast();
-  const [filter, setFilter] = useState<FilmFilter>({ page: 1, page_size: 50, sort_by: 'updated_at', sort_dir: 'desc' });
+  const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // 排序/分页/搜索以 URL 为源：进详情再 history.back 时 query 仍在，状态自然恢复。
+  const filter = useMemo(() => filterFromParams(searchParams), [searchParams]);
+
   const [rows, setRows] = useState<FilmRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  // 批量勾选：仅当前会话内存；换页/换筛选时清空，避免跨页误刮。
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  // 仅表示「本页刚点了启动」的短暂 loading；真正任务在主进程，切页不丢。
+  const [startingBatch, setStartingBatch] = useState(false);
+  // 待恢复的 scrollTop：mount 时读 sessionStorage，等 rows 拉完再 apply。
+  const pendingScrollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const saved = Number(sessionStorage.getItem(LIST_SCROLL_KEY) ?? '0');
+    if (saved > 0) pendingScrollRef.current = saved;
+    sessionStorage.removeItem(LIST_SCROLL_KEY);
+  }, []);
+
+  const setFilter = (f: FilmFilter) => {
+    const prev = filter;
+    const changed = f.q !== prev.q || f.actors !== prev.actors || f.genres !== prev.genres
+      || f.tags !== prev.tags || f.locales !== prev.locales || f.statuses !== prev.statuses
+      || f.include_deleted !== prev.include_deleted || f.sort_by !== prev.sort_by || f.sort_dir !== prev.sort_dir;
+    const next: FilmFilter = changed ? { ...f, page: 1, page_size: PAGE_SIZE } : { ...f, page_size: PAGE_SIZE };
+    setSearchParams(paramsFromFilter(next), { replace: true });
+    // 筛选/排序变化清空勾选，避免用户以为还在刮「当前可见」的一批。
+    if (changed) setSelectedIds(new Set());
+  };
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    mfl().library.list(filter).then(r => {
-      if (!cancelled) setRows(r.items);
+    mfl().library.list({ ...filter, page_size: PAGE_SIZE }).then(r => {
+      if (!cancelled) { setRows(r.items); setTotal(r.total); }
     }).catch(e => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' })).finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
   }, [filter]);
 
+  // rows 到位后再恢复滚动（空列表时 scrollHeight 不够，设了也会被钳成 0）。
+  useLayoutEffect(() => {
+    if (pendingScrollRef.current == null || loading) return;
+    const el = getMainScrollEl();
+    if (!el) return;
+    el.scrollTop = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+  }, [rows, loading]);
+
+  // 翻页时清空勾选（仅本页勾选语义更清晰）。
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [filter.page]);
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = filter.page ?? 1;
+  const goto = (p: number) => setSearchParams(paramsFromFilter({ ...filter, page: p }), { replace: true });
+
+  const onSortChange = (key: 'code' | 'actors') => {
+    if (filter.sort_by === key) {
+      const nextDir = filter.sort_dir === 'asc' ? 'desc' : 'asc';
+      setSearchParams(paramsFromFilter({ ...filter, sort_dir: nextDir, page: 1 }), { replace: true });
+      return;
+    }
+    const defaultDir = key === 'code' ? 'desc' : 'asc';
+    setSearchParams(paramsFromFilter({ ...filter, sort_by: key, sort_dir: defaultDir, page: 1 }), { replace: true });
+  };
+
+  const openDetail = (film: FilmRow) => {
+    const el = getMainScrollEl();
+    if (el) sessionStorage.setItem(LIST_SCROLL_KEY, String(el.scrollTop));
+    nav(`/film/${film.id}`, { state: { from: 'library' } });
+  };
+
+  const selectedRows = useMemo(
+    () => rows.filter(r => selectedIds.has(r.id)),
+    [rows, selectedIds],
+  );
+  const selectableWithCode = selectedRows.filter(r => !!r.code);
+  const selectedNoCode = selectedRows.length - selectableWithCode.length;
+
+  const runBatchScrape = async () => {
+    if (startingBatch) return;
+    if (selectedIds.size === 0) {
+      toast.push({ text: '请先勾选要刮削的影片', kind: 'error' });
+      return;
+    }
+    if (selectableWithCode.length === 0) {
+      toast.push({ text: '勾选的影片都没有编号，无法刮削', kind: 'error' });
+      return;
+    }
+    // 主进程可能已有任务
+    try {
+      const st = await mfl().scrape.getBatchStatus();
+      if (st?.running) {
+        toast.push({ text: '已有批量刮削在进行（可切换页面，进度在顶部）', kind: 'error' });
+        return;
+      }
+    } catch { /* ignore */ }
+
+    const msg = selectedNoCode > 0
+      ? `将并行刮削 ${selectableWithCode.length} 部（另有 ${selectedNoCode} 部无编号将跳过）。可切换页面，任务不中断。是否继续？`
+      : `将并行刮削 ${selectableWithCode.length} 部影片（默认并发 3）。可切换到演员/详情页，任务不中断。是否继续？`;
+    if (!confirm(msg)) return;
+
+    setStartingBatch(true);
+    try {
+      // 主进程并行批量：与 LibraryPage 生命周期无关，切页不打断。
+      // 并发读设置；未配置时主进程默认 6
+      let conc = 6;
+      try {
+        const s = await mfl().settings.get();
+        const n = Number(s.scrape_film_concurrency);
+        if (Number.isFinite(n) && n >= 1) conc = Math.min(16, Math.floor(n));
+      } catch { /* use default */ }
+      const result = await mfl().scrape.javbusBatch(
+        selectableWithCode.map(r => r.id),
+        conc,
+      );
+      // 回到本页时若仍挂着，刷新列表
+      try {
+        const r = await mfl().library.list({ ...filter, page_size: PAGE_SIZE });
+        setRows(r.items);
+        setTotal(r.total);
+      } catch { /* ignore */ }
+      toast.push({
+        text: `批量刮削${result.cancelled ? '已停止' : '完成'}：成功 ${result.ok}，失败 ${result.fail}，跳过 ${result.skip}`,
+        kind: result.fail > 0 ? 'error' : 'success',
+      });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setStartingBatch(false);
+    }
+  };
+
   return (
     <div>
-      <FilterBar value={filter} onChange={setFilter} />
-      <div style={{ marginBottom: 8, display: 'flex', gap: 8 }}>
+      <FilterBar value={{ ...filter, page_size: PAGE_SIZE }} onChange={setFilter} />
+      <div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={() => mfl().export.csv({ include_deleted: false }).then(r => r.ok && toast.push({ text: '已导出 CSV', kind: 'success' }))}>导出 CSV</button>
         <button onClick={() => mfl().export.json({ include_deleted: false }).then(r => r.ok && toast.push({ text: '已导出 JSON', kind: 'success' }))}>导出 JSON</button>
+        <span style={{ width: 1, height: 16, background: '#444' }} />
+        <button
+          disabled={startingBatch || rows.length === 0}
+          onClick={() => setSelectedIds(new Set(rows.map(r => r.id)))}
+        >全选本页</button>
+        <button
+          disabled={startingBatch || selectedIds.size === 0}
+          onClick={() => setSelectedIds(new Set())}
+        >清空勾选</button>
+        <button
+          disabled={startingBatch || selectedIds.size === 0}
+          onClick={() => void runBatchScrape()}
+          title="主进程并行刮削（默认并发3）；可切换页面，进度在顶部栏；无编号跳过"
+        >
+          {startingBatch ? '提交任务…' : `批量刮削${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
+        </button>
+        <button
+          disabled={startingBatch}
+          onClick={() => void mfl().scrape.cancelBatch().then((r: any) => {
+            toast.push({ text: r.ok ? '已请求停止批量刮削' : (r.message || '当前无批量任务'), kind: r.ok ? 'success' : 'error' });
+          })}
+        >停止批量</button>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#888' }}>
+          {loading ? '统计中…' : `共 ${total} 部影片`}
+          {selectedIds.size > 0 && ` · 已选 ${selectedIds.size}`}
+        </span>
       </div>
-      <FilmTable rows={rows} />
+      <FilmTable
+        rows={rows}
+        sortKey={filter.sort_by === 'code' || filter.sort_by === 'actors' ? filter.sort_by : null}
+        sortDir={filter.sort_dir}
+        onSortChange={onSortChange}
+        onRowDoubleClick={openDetail}
+        selectedIds={selectedIds}
+        onSelectionChange={setSelectedIds}
+      />
+      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#aaa' }}>
+        <span>共 {total} 条</span>
+        <span>第 {page} / {pageCount} 页</span>
+        <button disabled={page <= 1} onClick={() => goto(page - 1)}>上一页</button>
+        <button disabled={page >= pageCount} onClick={() => goto(page + 1)}>下一页</button>
+      </div>
       {loading && <div style={{ padding: 8 }}>加载中…</div>}
     </div>
   );

@@ -65,6 +65,28 @@ describe('walkFilmDirs', () => {
     expect(visited.map(v => v.filmDirName)).toEqual(['CCC-1 T']);
     expect(visited[0].parentDirName).toBe('0-Maria');
   });
+
+  // Q1：`F:\Movie\已处理\其他精品` 这种 root 直接放影片目录的结构。
+  // 没有任何 0-/1- 父目录时，应该走平铺根快车道，所有命中影片 parentDirName 都为 ''。
+  it('flat root recognizes films directly under root (no actor parents)', () => {
+    fs.mkdirSync(path.join(tmp, 'CJOD-295-C [FHD] Title A'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'SSIS-100 Title B'), { recursive: true });
+    const visited = Array.from(walkFilmDirs(tmp));
+    expect(visited.length).toBe(2);
+    expect(visited.every(v => v.parentDirName === '')).toBe(true);
+    expect(visited.map(v => v.filmDirName).sort()).toEqual(['CJOD-295-C [FHD] Title A', 'SSIS-100 Title B']);
+  });
+
+  // 平铺快车道只在 root 不含 actor/genre 父目录时触发；只要有一个 0-/1- 前缀的目录，
+  // 就回到两级逻辑，避免误吞。
+  it('flat branch NOT taken when an actor/genre parent exists', () => {
+    fs.mkdirSync(path.join(tmp, '0-Julia', 'AAA-1 T'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'CJOD-295-C strayfilm'), { recursive: true });
+    const visited = Array.from(walkFilmDirs(tmp));
+    // 0-Julia 子目录 AAA-1 T 应该走两级走法；strayfilm 不应被当作平铺影片识别。
+    expect(visited.map(v => v.filmDirName)).toContain('AAA-1 T');
+    expect(visited.map(v => v.parentDirName)).toContain('0-Julia');
+  });
 });
 
 function pickCover(files: { abs_path: string; is_image: number; size: number }[]): string | null {

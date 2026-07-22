@@ -6,7 +6,7 @@ import { nowMs, tx } from '../db/dao';
 import {
   upsertActorByName, upsertGenreByName,
   replaceFilmActors, replaceFilmGenres, replaceFilmTags, replaceFilmFiles,
-  listAllFilmPaths, markSoftDeleted,
+  listAllFilmPaths, markSoftDeleted, recomputeCodeCounts,
 } from '../db/queries';
 import type { ScanMode } from '../util/types';
 
@@ -45,6 +45,9 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanStats 
 
     const parsed = parseFilmDirName(v.filmDirName);
     const parentId = parseParentDirName(v.parentDirName, { defaultType: opts.defaultType });
+    // 平铺根扫描时 parentId.name 为 null；这种情况下 parent_type 也应落空，
+    // 避免在 films 表留下误导性的 'actor'/'genre' 标记（详情页能据此判断无归属）。
+    const effectiveParentType = parentId.name ? parentId.parent_type : null;
 
     const files = listFilmFiles(v.filmAbsPath);
     const cover = files.filter(f => f.is_image).sort((a, b) => b.size - a.size)[0] ?? null;
@@ -59,13 +62,13 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanStats 
       let filmId: number;
       if (prev) {
         db.prepare(`UPDATE films SET code=?, title=?, raw_dir_name=?, parent_dir_name=?, parent_type=?, locale=?, cover_path=?, scan_status=?, fs_mtime_ms=?, is_deleted=0, updated_at=? WHERE id=?`)
-          .run(parsed.code, parsed.title, v.filmDirName, v.parentDirName, parentId.parent_type, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), prev.id);
+          .run(parsed.code, parsed.title, v.filmDirName, v.parentDirName, effectiveParentType, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), prev.id);
         filmId = prev.id;
         if (v.mtime_ms !== prev.fs_mtime_ms) stats.dir_updated++;
         baseline.delete(v.filmAbsPath);
       } else {
         const r = db.prepare(`INSERT INTO films(code, title, raw_dir_name, abs_path, parent_dir_name, parent_type, locale, cover_path, scan_status, fs_mtime_ms, is_deleted, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)`)
-          .run(parsed.code, parsed.title, v.filmDirName, v.filmAbsPath, v.parentDirName, parentId.parent_type, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), nowMs());
+          .run(parsed.code, parsed.title, v.filmDirName, v.filmAbsPath, v.parentDirName, effectiveParentType, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), nowMs());
         filmId = Number(r.lastInsertRowid);
         stats.dir_added++;
       }
@@ -82,6 +85,10 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanStats 
     tx(db, () => { markSoftDeleted(db, missing.map(m => m.id)); });
     stats.dir_removed = missing.length;
   }
+
+  // 重算每部影片的同编号重复计数。扫描过后立刻保证列表徽标反映最新状态；
+  // 增量扫描走同一路径，因为增量也可能让某个 code 从 1 份变 2 份（或反之）。
+  recomputeCodeCounts(db);
 
   return stats;
 }

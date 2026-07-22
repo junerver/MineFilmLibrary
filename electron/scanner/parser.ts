@@ -5,15 +5,18 @@ export interface ParentParseOptions {
 }
 
 export function parseParentDirName(raw: string, opts: ParentParseOptions): ParsedParent {
-  const m = /^(\d+)-(.+)$/.exec(raw.trim());
+  // 平铺根扫描会传入空字符串（root 直接是影片目录），raw.trim() 必须容忍；
+  // 任何空/纯空白输入都返回 name=null，上层据此跳过演员/题材 upsert。
+  const s = (raw ?? '').trim();
+  if (!s) return { parent_type: opts.defaultType, name: null };
+  const m = /^(\d+)-(.+)$/.exec(s);
   if (m) {
     const idx = Number(m[1]);
     const name = m[2].trim();
     if (idx === 1) return { parent_type: 'genre', name };
     return { parent_type: 'actor', name };
   }
-  const name = raw.trim() || null;
-  return { parent_type: opts.defaultType, name };
+  return { parent_type: opts.defaultType, name: s || null };
 }
 
 const CODE_RE = /^([A-Za-z]+[-_]?[0-9]+)/;

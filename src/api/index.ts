@@ -16,10 +16,15 @@ export interface MflApi {
   };
   actors: {
     list(): Promise<T.ActorRow[]>;
-    create(name: string, raw?: string, cat?: string): Promise<number>;
-    update(id: number, patch: { name?: string; category?: string }): Promise<boolean>;
+    create(name: string, raw?: string, cat?: string, notes?: string): Promise<number>;
+    update(id: number, patch: { name?: string; category?: string | null; notes?: string | null }): Promise<boolean>;
     delete(id: number): Promise<boolean>;
     films(id: number): Promise<T.FilmRow[]>;
+    quickFind(q: string): Promise<{ id: number; name: string }[]>;
+    listAliases(id: number): Promise<string[]>;
+    addAlias(id: number, alias: string): Promise<boolean>;
+    removeAlias(alias: string): Promise<boolean>;
+    merge(fromId: number, toId: number): Promise<boolean>;
   };
   genres: {
     list(): Promise<T.GenreRow[]>;
@@ -34,7 +39,7 @@ export interface MflApi {
     runFull(id: number): Promise<{ ok: boolean; stats?: any; error?: string }>;
     runIncremental(id: number): Promise<{ ok: boolean; stats?: any; error?: string }>;
     listRuns(limit?: number): Promise<T.ScanRunRow[]>;
-    onProgress(cb: (p: any) => void): () => void;
+    onProgress(cb: (p: T.ScanProgressEvent) => void): () => void;
   };
   files: {
     listByFilm(id: number): Promise<T.FilmFileRow[]>;
@@ -55,6 +60,16 @@ export interface MflApi {
   settings: {
     get(): Promise<Record<string, string>>;
     set(key: string, value: string): Promise<boolean>;
+  };
+  scrape: {
+    javbus(filmId: number): Promise<T.ScrapeResult>;
+    javbusBatch(filmIds: number[], concurrency?: number): Promise<T.BatchScrapeProgress>;
+    cancelBatch(): Promise<{ ok: boolean; message?: string }>;
+    getBatchStatus(): Promise<T.BatchScrapeProgress>;
+    openLogDir(): Promise<{ ok: boolean; path?: string; error?: string; currentFile?: string | null }>;
+    getLogPath(): Promise<{ dir: string | null; file: string | null }>;
+    onProgress(cb: (p: T.ScrapeProgressEvent) => void): () => void;
+    onBatchProgress(cb: (p: T.BatchScrapeProgress) => void): () => void;
   };
 }
 

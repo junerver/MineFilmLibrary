@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS actors (
   name TEXT UNIQUE NOT NULL,
   raw_dir_name TEXT,
   category TEXT,
+  notes TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS films (
   scan_status TEXT NOT NULL,
   fs_mtime_ms INTEGER NOT NULL,
   is_deleted INTEGER NOT NULL DEFAULT 0,
+  code_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (cover_blob_id) REFERENCES cover_blobs(id) ON DELETE SET NULL
@@ -113,6 +115,18 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- 0002 新增：演员别名表。alias -> canonical actor_id。
+CREATE TABLE IF NOT EXISTS actor_aliases (
+  alias TEXT PRIMARY KEY,
+  actor_id INTEGER NOT NULL,
+  FOREIGN KEY(actor_id) REFERENCES actors(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_actor_aliases_actor ON actor_aliases(actor_id);
+
+-- 0002 新增：films.code_count 由 recomputeCodeCounts 维护，列表页显示同编号重复份数。
+-- 注意 films 表原始定义里没有这一列，老库通过 ALTER TABLE ADD COLUMN 升级。
+
 
 CREATE INDEX IF NOT EXISTS idx_films_code ON films(code);
 CREATE INDEX IF NOT EXISTS idx_films_parent ON films(parent_dir_name);

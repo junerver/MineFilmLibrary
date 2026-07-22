@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { up as migration0001 } from './migrations/0001-init';
+import { up as migration0002 } from './migrations/0002-aliases-and-codecount';
+import { up as migration0003 } from './migrations/0003-actor-notes';
 
 let db: Database.Database | null = null;
 
@@ -38,6 +40,8 @@ export function openDb(dbPath?: string): Database.Database {
     current = undefined;
   }
   if (!current || current.version < 1) migration0001(instance);
+  if (!current || current.version < 2) migration0002(instance);
+  if (!current || current.version < 3) migration0003(instance);
   return instance;
 }
 
@@ -56,5 +60,7 @@ export function openDbForTest(target: string): Database.Database {
   instance.pragma('journal_mode = WAL');
   instance.pragma('foreign_keys = ON');
   migration0001(instance);
+  migration0002(instance);
+  migration0003(instance);
   return instance;
 }

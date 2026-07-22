@@ -8,12 +8,12 @@ const fakeRow = {
   id: 1, code: 'AAA-1', title: 'T1', is_deleted: 0, scan_status: 'parsed' as const,
   locale: null, parent_type: 'actor' as const, parent_dir_name: '0-J',
   raw_dir_name: 'AAA-1 T1', abs_path: '/x/AAA-1 T1', cover_path: null, cover_blob_id: null,
-  notes: null, fs_mtime_ms: 0, created_at: 0, updated_at: 0,
+  notes: null, fs_mtime_ms: 0, code_count: 1, created_at: 0, updated_at: 0,
 };
 
 const fakeApi = {
   library: {
-    list: vi.fn(async (_f: FilmFilter): Promise<ListResult<FilmRow>> => ({ items: [fakeRow], total: 1, page: 1, page_size: 50 })),
+    list: vi.fn(async (_f: FilmFilter): Promise<ListResult<FilmRow>> => ({ items: [fakeRow], total: 1, page: 1, page_size: 1000 })),
     get: vi.fn(async () => null),
     create: vi.fn(async () => 1),
     update: vi.fn(async () => true),

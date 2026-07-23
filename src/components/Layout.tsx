@@ -37,7 +37,8 @@ export default function Layout() {
               ? `扫描完成（${progress.current} 个目录）`
               : progress.flash === 'error'
                 ? `扫描失败：${progress.errorMessage ?? '未知错误'}`
-                : `扫描中 ${progress.current}/${progress.total} — ${progress.currentPath}`}
+                : `${progress.stage === 'scrape' ? '新片刮削中' : progress.stage === 'fallback' ? '应用目录兜底' : '扫描中'} ${progress.current}/${progress.total}`
+                  + (progress.currentPath ? ` — ${progress.currentPath}` : '')}
           </div>
         )}
         {/* 批量刮削：主进程任务，任意页面可见；切页不中断。 */}

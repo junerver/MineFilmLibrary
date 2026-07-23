@@ -46,6 +46,23 @@ describe('parseFilmDirName', () => {
     expect(r.tags).toEqual(['FHD', '4K']);
     expect(r.title).toBe('T');
   });
+  it('keeps the full FC2-PPV vendor code and treats HD as a tag', () => {
+    const r = parseFilmDirName('fc2-ppv-739673-HD');
+    expect(r).toEqual({
+      code: 'fc2-ppv-739673',
+      locale: null,
+      tags: ['HD'],
+      title: null,
+      scan_status: 'partial',
+    });
+  });
+  it('supports an FC2-PPV code followed by a title', () => {
+    const r = parseFilmDirName('FC2PPV-739673 [FHD] Sample title');
+    expect(r.code).toBe('FC2PPV-739673');
+    expect(r.tags).toEqual(['FHD']);
+    expect(r.title).toBe('Sample title');
+    expect(r.scan_status).toBe('parsed');
+  });
   it('skips empty placeholder brackets in tags', () => {
     const r = parseFilmDirName('CJOD-295 [ ] [   ] [FHD] T');
     expect(r.code).toBe('CJOD-295');

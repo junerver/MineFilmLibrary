@@ -4,6 +4,9 @@ import path from 'node:path';
 import { up as migration0001 } from './migrations/0001-init';
 import { up as migration0002 } from './migrations/0002-aliases-and-codecount';
 import { up as migration0003 } from './migrations/0003-actor-notes';
+import { up as migration0004 } from './migrations/0004-scraped-at';
+import { up as migration0005 } from './migrations/0005-actor-javbus';
+import { up as migration0006 } from './migrations/0006-actor-profile';
 
 let db: Database.Database | null = null;
 
@@ -42,6 +45,9 @@ export function openDb(dbPath?: string): Database.Database {
   if (!current || current.version < 1) migration0001(instance);
   if (!current || current.version < 2) migration0002(instance);
   if (!current || current.version < 3) migration0003(instance);
+  if (!current || current.version < 4) migration0004(instance);
+  if (!current || current.version < 5) migration0005(instance);
+  if (!current || current.version < 6) migration0006(instance);
   return instance;
 }
 
@@ -62,5 +68,8 @@ export function openDbForTest(target: string): Database.Database {
   migration0001(instance);
   migration0002(instance);
   migration0003(instance);
+  migration0004(instance);
+  migration0005(instance);
+  migration0006(instance);
   return instance;
 }

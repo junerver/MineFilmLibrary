@@ -49,6 +49,28 @@ function filmConcurrencyDefault(): number {
   return readIntSetting('scrape_film_concurrency', 6, 1, 16);
 }
 
+/** 刮削范围开关：'0'/'false'/'off' 为关，其它为开；缺省默认开。 */
+function scrapeFlag(key: string, defaultOn = true): boolean {
+  try {
+    const row = getDb().prepare('SELECT value FROM settings WHERE key=?').get(key) as { value: string } | undefined;
+    if (row?.value == null || row.value === '') return defaultOn;
+    const v = String(row.value).toLowerCase();
+    return !(v === '0' || v === 'false' || v === 'off');
+  } catch {
+    return defaultOn;
+  }
+}
+
+function scrapeScope() {
+  return {
+    title: scrapeFlag('scrape_enable_title', true),
+    meta: scrapeFlag('scrape_enable_meta', true), // 演员/题材/备注/发行信息
+    cover: scrapeFlag('scrape_enable_cover', true),
+    // 样图默认关：DMM sample 常超时，关掉可明显提速
+    samples: scrapeFlag('scrape_enable_samples', false),
+  };
+}
+
 export interface ScrapeProgress {
   filmId: number;
   stage: 'start' | 'page' | 'cover' | 'samples' | 'meta' | 'done' | 'error';
@@ -106,7 +128,7 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: num
   return results;
 }
 
-async function scrapeOneFilm(filmId: number) {
+export async function scrapeOneFilm(filmId: number) {
   const tAll = log.timed(TAG, `film#${filmId}`);
   const db = getDb();
   const film = db.prepare('SELECT * FROM films WHERE id=?').get(filmId) as any;
@@ -119,7 +141,8 @@ async function scrapeOneFilm(filmId: number) {
   const baseUrl = (settingsRow?.value ?? '').trim();
   if (!baseUrl) throw new Error('请先在「设置」里配置 JavBus 站点地址（javbus_base_url）');
 
-  log.info(TAG, `film#${filmId} code=${film.code} base=${baseUrl} path=${film.abs_path}`);
+  const scope = scrapeScope();
+  log.info(TAG, `film#${filmId} code=${film.code} base=${baseUrl} path=${film.abs_path} scope=${JSON.stringify(scope)}`);
 
   emitProgress({ filmId, stage: 'page', current: 0, total: 1, message: '请求详情页…' });
   const tPage = log.timed(TAG, `film#${filmId} page`);
@@ -139,132 +162,162 @@ async function scrapeOneFilm(filmId: number) {
   let samplesFail = 0;
   let samplesSkip = 0;
 
-  if (dirExists) {
+  if (dirExists && (scope.cover || scope.samples)) {
     const existing = listExistingBasenames(film.abs_path);
     const baseName = safeFileBase(scraped.title || scraped.code);
 
     // —— 封面 ——
-    emitProgress({ filmId, stage: 'cover', current: 0, total: 1, message: '处理封面…' });
-    if (scraped.coverUrl) {
-      const coverFile = `${baseName}.jpg`;
-      if (!existing.has(coverFile.toLowerCase())) {
-        const tCover = log.timed(TAG, `film#${filmId} cover`);
-        try {
-          const buf = await fetchBinary(scraped.coverUrl, imageTimeoutMs());
-          fs.writeFileSync(path.join(film.abs_path, coverFile), buf);
-          written.push(coverFile);
-          existing.add(coverFile.toLowerCase());
-          coverRel = coverFile;
-          tCover('ok', { bytes: buf.length, file: coverFile });
-        } catch (e: unknown) {
-          tCover('fail', String((e as Error)?.message ?? e));
-          log.warn(TAG, `cover fail film#${filmId}`, String((e as Error)?.message ?? e));
+    if (scope.cover) {
+      emitProgress({ filmId, stage: 'cover', current: 0, total: 1, message: '处理封面…' });
+      if (scraped.coverUrl) {
+        const coverFile = `${baseName}.jpg`;
+        if (!existing.has(coverFile.toLowerCase())) {
+          const tCover = log.timed(TAG, `film#${filmId} cover`);
+          try {
+            const buf = await fetchBinary(scraped.coverUrl, imageTimeoutMs());
+            fs.writeFileSync(path.join(film.abs_path, coverFile), buf);
+            written.push(coverFile);
+            existing.add(coverFile.toLowerCase());
+            coverRel = coverFile;
+            tCover('ok', { bytes: buf.length, file: coverFile });
+          } catch (e: unknown) {
+            tCover('fail', String((e as Error)?.message ?? e));
+            log.warn(TAG, `cover fail film#${filmId}`, String((e as Error)?.message ?? e));
+          }
+        } else {
+          coverRel = coverRel || coverFile;
+          log.info(TAG, `film#${filmId} cover skip exists ${coverFile}`);
         }
-      } else {
-        coverRel = coverRel || coverFile;
-        log.info(TAG, `film#${filmId} cover skip exists ${coverFile}`);
+        if (!coverRel) coverRel = pickCoverRel(film.abs_path, null);
       }
-      if (!coverRel) coverRel = pickCoverRel(film.abs_path, null);
+    } else {
+      log.info(TAG, `film#${filmId} cover skipped by setting`);
     }
 
-    // —— 预览图：并发 + 短超时，避免串行 12×45s 卡死 ——
-    const samples = scraped.sampleUrls;
-    const totalS = samples.length;
-    emitProgress({ filmId, stage: 'samples', current: 0, total: Math.max(totalS, 1), message: totalS ? `下载预览 0/${totalS}` : '无预览图' });
+    // —— 预览样图（sample-box）：默认关闭，因 DMM 图床常超时 ——
+    if (scope.samples) {
+      const samples = scraped.sampleUrls;
+      const totalS = samples.length;
+      emitProgress({ filmId, stage: 'samples', current: 0, total: Math.max(totalS, 1), message: totalS ? `下载预览 0/${totalS}` : '无预览图' });
 
-    if (totalS > 0) {
-      let finished = 0;
-      const imgTimeout = imageTimeoutMs();
-      const sampleConc = sampleConcurrency();
-      log.info(TAG, `film#${filmId} samples n=${totalS} concurrency=${sampleConc} timeout=${imgTimeout}ms`);
-      await mapPool(samples, sampleConc, async (url, i) => {
-        const sampleFile = `${baseName}-${i + 1}.jpg`;
-        if (existing.has(sampleFile.toLowerCase())) {
-          samplesSkip++;
-          finished++;
-          emitProgress({ filmId, stage: 'samples', current: finished, total: totalS, message: `预览 ${finished}/${totalS} 跳过 ${sampleFile}` });
-          log.debug(TAG, `film#${filmId} sample skip ${sampleFile}`);
-          return;
-        }
-        const t0 = Date.now();
-        try {
-          const buf = await fetchBinary(url, imgTimeout);
-          fs.writeFileSync(path.join(film.abs_path, sampleFile), buf);
-          written.push(sampleFile);
-          existing.add(sampleFile.toLowerCase());
-          samplesOk++;
-          log.info(TAG, `film#${filmId} sample ok ${sampleFile} ${buf.length}b ${Date.now() - t0}ms`);
-        } catch (e: unknown) {
-          samplesFail++;
-          log.warn(TAG, `film#${filmId} sample fail #${i + 1} ${Date.now() - t0}ms`, String((e as Error)?.message ?? e));
-        } finally {
-          finished++;
-          emitProgress({
-            filmId,
-            stage: 'samples',
-            current: finished,
-            total: totalS,
-            message: `预览 ${finished}/${totalS}（成功 ${samplesOk} 失败 ${samplesFail} 跳过 ${samplesSkip}）`,
-          });
-        }
-      });
+      if (totalS > 0) {
+        let finished = 0;
+        const imgTimeout = imageTimeoutMs();
+        const sampleConc = sampleConcurrency();
+        log.info(TAG, `film#${filmId} samples n=${totalS} concurrency=${sampleConc} timeout=${imgTimeout}ms`);
+        await mapPool(samples, sampleConc, async (url, i) => {
+          const sampleFile = `${baseName}-${i + 1}.jpg`;
+          if (existing.has(sampleFile.toLowerCase())) {
+            samplesSkip++;
+            finished++;
+            emitProgress({ filmId, stage: 'samples', current: finished, total: totalS, message: `预览 ${finished}/${totalS} 跳过 ${sampleFile}` });
+            return;
+          }
+          const t0 = Date.now();
+          try {
+            const buf = await fetchBinary(url, imgTimeout);
+            fs.writeFileSync(path.join(film.abs_path, sampleFile), buf);
+            written.push(sampleFile);
+            existing.add(sampleFile.toLowerCase());
+            samplesOk++;
+            log.info(TAG, `film#${filmId} sample ok ${sampleFile} ${buf.length}b ${Date.now() - t0}ms`);
+          } catch (e: unknown) {
+            samplesFail++;
+            log.warn(TAG, `film#${filmId} sample fail #${i + 1} ${Date.now() - t0}ms`, String((e as Error)?.message ?? e));
+          } finally {
+            finished++;
+            emitProgress({
+              filmId,
+              stage: 'samples',
+              current: finished,
+              total: totalS,
+              message: `预览 ${finished}/${totalS}（成功 ${samplesOk} 失败 ${samplesFail} 跳过 ${samplesSkip}）`,
+            });
+          }
+        });
+      }
+    } else {
+      emitProgress({ filmId, stage: 'samples', current: 0, total: 0, message: '已跳过样图下载（设置关闭）' });
+      log.info(TAG, `film#${filmId} samples skipped by setting`);
     }
 
-    if (!coverRel) coverRel = pickCoverRel(film.abs_path, written[0] ?? null);
+    if (!coverRel && scope.cover) coverRel = pickCoverRel(film.abs_path, written[0] ?? null);
 
-    const files = listFilmFiles(film.abs_path);
-    replaceFilmFiles(db, filmId, files);
-    log.info(TAG, `film#${filmId} restat files=${files.length} written=${written.length}`);
-  } else {
+    if (written.length > 0 || scope.cover || scope.samples) {
+      const files = listFilmFiles(film.abs_path);
+      replaceFilmFiles(db, filmId, files);
+      log.info(TAG, `film#${filmId} restat files=${files.length} written=${written.length}`);
+    }
+  } else if (!dirExists) {
     log.info(TAG, `film#${filmId} dir missing, meta only: ${film.abs_path}`);
   }
 
-  // —— 元数据 ——
+  // —— 元数据（标题 / 演员题材备注）——
   emitProgress({ filmId, stage: 'meta', current: 1, total: 1, message: '写入元数据…' });
-  const newTitle = scraped.title || film.title;
+  const newTitle = scope.title ? (scraped.title || film.title) : film.title;
   const newCode = film.code;
 
-  // 演员：upsertActorByName 会走别名表——刮到别名 B 时归到配置了 B 的 canonical A。
   const actorIds: number[] = [];
-  for (const name of scraped.actresses) {
-    const n = (name ?? '').trim();
-    if (!n) continue;
-    try {
-      const id = upsertActorByName(db, n, n);
-      actorIds.push(id);
-      log.info(TAG, `film#${filmId} actress "${n}" → actor_id=${id}`);
-    } catch (e: unknown) {
-      log.warn(TAG, `film#${filmId} actress upsert fail "${n}"`, String((e as Error)?.message ?? e));
-    }
-  }
   const genreIds: number[] = [];
-  for (const g of scraped.genres) {
-    try { genreIds.push(upsertGenreByName(db, g)); } catch { /* ignore */ }
-  }
-  const oldTags = (db.prepare('SELECT tag FROM film_tags WHERE film_id=?').all(filmId) as { tag: string }[]).map(t => t.tag);
-  const tags = Array.from(new Set([...oldTags, ...scraped.genres]));
-
-  const scrapeNote = formatScrapeNotes(scraped);
+  let tags: string[] = [];
   let newNotes: string | null = film.notes ?? null;
-  if (scrapeNote) {
-    if (!newNotes) newNotes = scrapeNote;
-    else if (!newNotes.includes(scraped.pageUrl)) newNotes = `${newNotes.trim()}\n\n[JavBus]\n${scrapeNote}`;
+
+  if (scope.meta) {
+    for (const name of scraped.actresses) {
+      const n = (name ?? '').trim();
+      if (!n) continue;
+      try {
+        const id = upsertActorByName(db, n, n);
+        actorIds.push(id);
+        log.info(TAG, `film#${filmId} actress "${n}" → actor_id=${id}`);
+      } catch (e: unknown) {
+        log.warn(TAG, `film#${filmId} actress upsert fail "${n}"`, String((e as Error)?.message ?? e));
+      }
+    }
+    for (const g of scraped.genres) {
+      try { genreIds.push(upsertGenreByName(db, g)); } catch { /* ignore */ }
+    }
+    const oldTags = (db.prepare('SELECT tag FROM film_tags WHERE film_id=?').all(filmId) as { tag: string }[]).map(t => t.tag);
+    tags = Array.from(new Set([...oldTags, ...scraped.genres]));
+
+    const scrapeNote = formatScrapeNotes(scraped);
+    if (scrapeNote) {
+      if (!newNotes) newNotes = scrapeNote;
+      else if (!newNotes.includes(scraped.pageUrl)) newNotes = `${newNotes.trim()}\n\n[JavBus]\n${scrapeNote}`;
+    }
   }
 
+  const scrapedAt = nowMs();
+  const newScanStatus = newCode && newTitle ? 'parsed' : (newCode || newTitle ? 'partial' : 'unknown');
   tx(db, () => {
-    db.prepare(
-      `UPDATE films SET title=?, cover_path=COALESCE(?, cover_path), notes=?, updated_at=?, scan_status=CASE WHEN scan_status='unknown' THEN 'partial' ELSE scan_status END WHERE id=?`
-    ).run(newTitle, coverRel, newNotes, nowMs(), filmId);
+    // 始终更新 scraped_at；title/cover/notes 按开关写
+    if (scope.title || scope.cover || scope.meta) {
+      db.prepare(
+        `UPDATE films SET
+          title=?,
+          cover_path=COALESCE(?, cover_path),
+          notes=?,
+          scraped_at=?,
+          updated_at=?,
+          scan_status=?
+         WHERE id=?`
+      ).run(newTitle, scope.cover ? coverRel : null, newNotes, scrapedAt, scrapedAt, newScanStatus, filmId);
+    } else {
+      // 仅样图等极端情况也打标记
+      db.prepare(`UPDATE films SET scraped_at=?, updated_at=? WHERE id=?`).run(scrapedAt, scrapedAt, filmId);
+    }
 
-    if (actorIds.length) {
-      const existing = (db.prepare('SELECT actor_id FROM film_actors WHERE film_id=?').all(filmId) as { actor_id: number }[]).map(r => r.actor_id);
-      replaceFilmActors(db, filmId, Array.from(new Set([...existing, ...actorIds])));
+    if (scope.meta) {
+      if (actorIds.length) {
+        const existing = (db.prepare('SELECT actor_id FROM film_actors WHERE film_id=?').all(filmId) as { actor_id: number }[]).map(r => r.actor_id);
+        replaceFilmActors(db, filmId, Array.from(new Set([...existing, ...actorIds])));
+      }
+      if (genreIds.length) {
+        const existing = (db.prepare('SELECT genre_id FROM film_genres WHERE film_id=?').all(filmId) as { genre_id: number }[]).map(r => r.genre_id);
+        replaceFilmGenres(db, filmId, Array.from(new Set([...existing, ...genreIds])));
+      }
+      if (tags.length) replaceFilmTags(db, filmId, tags);
     }
-    if (genreIds.length) {
-      const existing = (db.prepare('SELECT genre_id FROM film_genres WHERE film_id=?').all(filmId) as { genre_id: number }[]).map(r => r.genre_id);
-      replaceFilmGenres(db, filmId, Array.from(new Set([...existing, ...genreIds])));
-    }
-    if (tags.length) replaceFilmTags(db, filmId, tags);
   });
 
   const result = {
@@ -274,7 +327,7 @@ async function scrapeOneFilm(filmId: number) {
     pageUrl: scraped.pageUrl,
     actresses: scraped.actresses,
     genres: scraped.genres,
-    samplesFound: scraped.sampleUrls.length,
+    samplesFound: scope.samples ? scraped.sampleUrls.length : 0,
     samplesOk,
     samplesFail,
     samplesSkip,
@@ -283,6 +336,8 @@ async function scrapeOneFilm(filmId: number) {
     dirExists: !!dirExists,
     releaseDate: scraped.releaseDate,
     studio: scraped.studio,
+    scraped_at: scrapedAt,
+    scope,
     logFile: getCurrentLogFile(),
   };
 
@@ -291,9 +346,10 @@ async function scrapeOneFilm(filmId: number) {
     stage: 'done',
     current: 1,
     total: 1,
-    message: `完成 写文件 ${written.length} 预览成功 ${samplesOk}/${scraped.sampleUrls.length}`,
+    message: `完成 写文件 ${written.length}`
+      + (scope.samples ? ` 预览 ${samplesOk}/${scraped.sampleUrls.length}` : ' 样图已跳过'),
   });
-  tAll('ok', { written: written.length, samplesOk, samplesFail, samplesSkip });
+  tAll('ok', { written: written.length, samplesOk, samplesFail, samplesSkip, scope });
   return result;
 }
 
@@ -360,12 +416,21 @@ async function runBatchScrape(filmIds: number[], concurrency: number): Promise<B
       return;
     }
 
-    const film = getDb().prepare('SELECT id, code FROM films WHERE id=?').get(filmId) as { id: number; code: string | null } | undefined;
+    const film = getDb().prepare('SELECT id, code, scraped_at FROM films WHERE id=?').get(filmId) as
+      { id: number; code: string | null; scraped_at: number | null } | undefined;
     const codeLabel = film?.code ? film.code.toUpperCase() : `#${filmId}`;
     if (!film?.code) {
       skip++;
       done++;
       emitBatchProgress(snapshot(`跳过无编号 ${codeLabel}`));
+      return;
+    }
+    // 已刮削过的跳过，避免重复耗时
+    if (film.scraped_at) {
+      skip++;
+      done++;
+      emitBatchProgress(snapshot(`跳过已刮削 ${codeLabel}`));
+      log.info(TAG, `batch skip already scraped film#${filmId} at ${film.scraped_at}`);
       return;
     }
 

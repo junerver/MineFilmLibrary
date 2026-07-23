@@ -22,6 +22,8 @@ export function registerLibraryIpc() {
       updated_at: 'updated_at',
       fs_mtime_ms: 'fs_mtime_ms',
       actors: "CASE WHEN actors_names = '' THEN 0 ELSE 1 END, actors_names",
+      // 未刮削 (NULL) 在 ASC 时靠前，便于优先处理
+      scraped_at: 'CASE WHEN scraped_at IS NULL THEN 0 ELSE 1 END, scraped_at',
     };
     const sortColRaw = filter.sort_by ?? 'updated_at';
     const sortCol = ALLOWED_SORT[sortColRaw] ?? 'updated_at';
@@ -74,7 +76,7 @@ export function registerLibraryIpc() {
     const tags = db.prepare('SELECT tag FROM film_tags WHERE film_id=?').all(id) as { tag: string }[];
     // 同编号兄弟影片（用于详情页"多路径"提示）。code 为 NULL 时返回空数组。
     const same_code_films = film.code
-      ? db.prepare('SELECT id, abs_path, parent_dir_name, scan_status FROM films WHERE code=? AND id<>? AND is_deleted=0 ORDER BY abs_path').all(film.code, id) as { id: number; abs_path: string; parent_dir_name: string; scan_status: string }[]
+      ? db.prepare('SELECT id, abs_path, parent_dir_name, scan_status FROM films WHERE code=? COLLATE NOCASE AND id<>? AND is_deleted=0 ORDER BY abs_path').all(film.code, id) as { id: number; abs_path: string; parent_dir_name: string; scan_status: string }[]
       : [];
     return { ...film, actors, genres, tags: tags.map(t => t.tag), same_code_films };
   });
@@ -109,7 +111,7 @@ export function registerLibraryIpc() {
     return tx(db, () => {
       const sets: string[] = [];
       const args: any[] = [];
-      for (const k of ['code', 'title', 'locale', 'parent_type', 'parent_dir_name', 'cover_path', 'notes', 'scan_status'] as const) {
+      for (const k of ['code', 'title', 'locale', 'parent_type', 'parent_dir_name', 'cover_path', 'notes', 'scan_status', 'scraped_at'] as const) {
         if (k in patch) { sets.push(`${k}=?`); args.push((patch as any)[k]); }
       }
       sets.push('updated_at=?'); args.push(nowMs());

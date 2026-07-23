@@ -6,17 +6,19 @@ import { nowMs, tx } from '../db/dao';
 import {
   upsertActorByName, upsertGenreByName,
   replaceFilmActors, replaceFilmGenres, replaceFilmTags, replaceFilmFiles,
-  listAllFilmPaths, markSoftDeleted, recomputeCodeCounts,
+  filmCodeExists, listAllFilmPaths, recomputeCodeCounts,
 } from '../db/queries';
-import type { ScanMode } from '../util/types';
+import type { ParsedDir, ScanMode } from '../util/types';
 
 export interface ProgressCb { (p: ScanProgress): void; }
-export interface ScanProgress { stage: string; current: number; total: number; currentPath: string; }
+export interface ScanProgress { stage: 'scan' | 'scrape' | 'fallback'; current: number; total: number; currentPath: string; }
 
 export interface ScannerOptions {
   mode: ScanMode;
   rootPath: string;
   defaultType: 'actor' | 'genre';
+  /** 影片目录相对扫描根目录的最大层级，默认 3。 */
+  maxDepth?: number;
   onProgress?: ProgressCb;
 }
 
@@ -27,68 +29,146 @@ export interface ScanStats {
   dir_removed: number;
 }
 
-export function runScan(db: Database.Database, opts: ScannerOptions): ScanStats {
-  const stats: ScanStats = { dir_seen: 0, dir_added: 0, dir_updated: 0, dir_removed: 0 };
-  const visits = Array.from(walkFilmDirs(opts.rootPath));
+/** 扫描阶段暂存的旧规则结果，仅在刮削失败时用于兜底。 */
+export interface ScanAddedFilm {
+  filmId: number;
+  code: string | null;
+  absPath: string;
+  initializeMetadata: boolean;
+  parsed: ParsedDir;
+  parentDirName: string;
+  defaultType: 'actor' | 'genre';
+  coverRel: string | null;
+}
 
-  const baseline = new Map(listAllFilmPaths(db, opts.rootPath).map(r => [r.abs_path, r]));
+export interface ScanResult extends ScanStats {
+  addedFilms: ScanAddedFilm[];
+}
+
+export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult {
+  const stats: ScanStats = { dir_seen: 0, dir_added: 0, dir_updated: 0, dir_removed: 0 };
+  const addedFilms: ScanAddedFilm[] = [];
+  const visits = Array.from(walkFilmDirs(opts.rootPath, opts.maxDepth));
+
+  // Windows 路径大小写不敏感。数据库中可能保留了旧路径的不同大小写，
+  // 用标准化 key 匹配可避免重扫时把同一目录当成新片重复插入。
+  const pathKey = (value: string) => {
+    const resolved = path.resolve(value);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const baseline = new Map(listAllFilmPaths(db, opts.rootPath).map(r => [pathKey(r.abs_path), r]));
 
   for (const v of visits) {
     stats.dir_seen++;
     opts.onProgress?.({ stage: 'scan', current: stats.dir_seen, total: visits.length, currentPath: v.filmAbsPath });
 
-    const prev = baseline.get(v.filmAbsPath);
+    const key = pathKey(v.filmAbsPath);
+    const prev = baseline.get(key);
     if (opts.mode === 'incremental' && prev && v.mtime_ms === prev.fs_mtime_ms) {
-      baseline.delete(v.filmAbsPath);
+      baseline.delete(key);
+      continue;
+    }
+
+    const files = listFilmFiles(v.filmAbsPath);
+
+    if (prev) {
+      const dirChanged = v.mtime_ms !== prev.fs_mtime_ms;
+      tx(db, () => {
+        if (dirChanged) {
+          // 已有影片的业务元数据可能来自手工维护或刮削。目录 mtime 变化只说明
+          // 文件清单需要刷新，绝不能重新用目录名覆盖标题、封面、关联等字段。
+          db.prepare('UPDATE films SET fs_mtime_ms=?, updated_at=? WHERE id=?')
+            .run(v.mtime_ms, nowMs(), prev.id);
+        }
+        replaceFilmFiles(db, prev.id, files);
+      });
+      if (dirChanged) stats.dir_updated++;
+      baseline.delete(key);
       continue;
     }
 
     const parsed = parseFilmDirName(v.filmDirName);
-    const parentId = parseParentDirName(v.parentDirName, { defaultType: opts.defaultType });
-    // 平铺根扫描时 parentId.name 为 null；这种情况下 parent_type 也应落空，
-    // 避免在 films 表留下误导性的 'actor'/'genre' 标记（详情页能据此判断无归属）。
-    const effectiveParentType = parentId.name ? parentId.parent_type : null;
-
-    const files = listFilmFiles(v.filmAbsPath);
+    // 扫描只负责建立路径/编号/文件清单。目录名解析结果暂存为刮削失败时的
+    // 兜底数据，避免扫描阶段直接把目录命名当成正式元数据来源。
+    const initializeMetadata = !filmCodeExists(db, parsed.code);
     const cover = files.filter(f => f.is_image).sort((a, b) => b.size - a.size)[0] ?? null;
     const coverRel = cover ? path.relative(v.filmAbsPath, cover.abs_path) : null;
 
-    const actorIds: number[] = [];
-    const genreIds: number[] = [];
-    if (parentId.parent_type === 'actor' && parentId.name) actorIds.push(upsertActorByName(db, parentId.name, v.parentDirName));
-    if (parentId.parent_type === 'genre' && parentId.name) genreIds.push(upsertGenreByName(db, parentId.name));
-
+    let filmId = 0;
     tx(db, () => {
-      let filmId: number;
-      if (prev) {
-        db.prepare(`UPDATE films SET code=?, title=?, raw_dir_name=?, parent_dir_name=?, parent_type=?, locale=?, cover_path=?, scan_status=?, fs_mtime_ms=?, is_deleted=0, updated_at=? WHERE id=?`)
-          .run(parsed.code, parsed.title, v.filmDirName, v.parentDirName, effectiveParentType, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), prev.id);
-        filmId = prev.id;
-        if (v.mtime_ms !== prev.fs_mtime_ms) stats.dir_updated++;
-        baseline.delete(v.filmAbsPath);
-      } else {
-        const r = db.prepare(`INSERT INTO films(code, title, raw_dir_name, abs_path, parent_dir_name, parent_type, locale, cover_path, scan_status, fs_mtime_ms, is_deleted, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)`)
-          .run(parsed.code, parsed.title, v.filmDirName, v.filmAbsPath, v.parentDirName, effectiveParentType, parsed.locale, coverRel, parsed.scan_status, v.mtime_ms, nowMs(), nowMs());
-        filmId = Number(r.lastInsertRowid);
-        stats.dir_added++;
-      }
-      replaceFilmActors(db, filmId, actorIds);
-      replaceFilmGenres(db, filmId, genreIds);
-      replaceFilmTags(db, filmId, parsed.tags);
+      const r = db.prepare(`INSERT INTO films(code, title, raw_dir_name, abs_path, parent_dir_name, parent_type, locale, cover_path, scan_status, fs_mtime_ms, is_deleted, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)`)
+        .run(
+          parsed.code,
+          null,
+          v.filmDirName,
+          v.filmAbsPath,
+          v.parentDirName,
+          null,
+          null,
+          null,
+          parsed.code ? 'partial' : 'unknown',
+          v.mtime_ms,
+          nowMs(),
+          nowMs(),
+        );
+      filmId = Number(r.lastInsertRowid);
+      stats.dir_added++;
       replaceFilmFiles(db, filmId, files);
+    });
+    addedFilms.push({
+      filmId,
+      code: parsed.code,
+      absPath: v.filmAbsPath,
+      initializeMetadata,
+      parsed,
+      parentDirName: v.parentDirName,
+      defaultType: opts.defaultType,
+      coverRel,
     });
   }
 
-  // Remaining baseline => missing => soft delete
-  const missing = Array.from(baseline.values());
-  if (missing.length) {
-    tx(db, () => { markSoftDeleted(db, missing.map(m => m.id)); });
-    stats.dir_removed = missing.length;
-  }
+  // 未在磁盘上见到的路径仍保留数据库记录。目录有效性由详情页实时检查，
+  // 扫描不会自动把记录送进回收站，也不会恢复用户手动删除的记录。
 
   // 重算每部影片的同编号重复计数。扫描过后立刻保证列表徽标反映最新状态；
   // 增量扫描走同一路径，因为增量也可能让某个 code 从 1 份变 2 份（或反之）。
   recomputeCodeCounts(db);
 
-  return stats;
+  return { ...stats, addedFilms };
+}
+
+/**
+ * 刮削失败时给新入库影片应用旧的目录识别结果。
+ * 已存在同编号的副本不做兜底初始化，继续保持“只记录路径/编号”的规则。
+ */
+export function applyScanFallback(db: Database.Database, item: ScanAddedFilm): boolean {
+  if (!item.initializeMetadata) return false;
+  const parent = parseParentDirName(item.parentDirName, { defaultType: item.defaultType });
+  const actorIds: number[] = [];
+  const genreIds: number[] = [];
+
+  tx(db, () => {
+    if (parent.parent_type === 'actor' && parent.name) {
+      actorIds.push(upsertActorByName(db, parent.name, item.parentDirName));
+    }
+    if (parent.parent_type === 'genre' && parent.name) {
+      genreIds.push(upsertGenreByName(db, parent.name));
+    }
+    db.prepare(`UPDATE films SET
+      title=?, locale=?, cover_path=?, parent_type=?, scan_status=?, updated_at=?
+      WHERE id=?`)
+      .run(
+        item.parsed.title,
+        item.parsed.locale,
+        item.coverRel,
+        parent.name ? parent.parent_type : null,
+        item.parsed.scan_status,
+        nowMs(),
+        item.filmId,
+      );
+    replaceFilmActors(db, item.filmId, actorIds);
+    replaceFilmGenres(db, item.filmId, genreIds);
+    replaceFilmTags(db, item.filmId, item.parsed.tags);
+  });
+  return true;
 }

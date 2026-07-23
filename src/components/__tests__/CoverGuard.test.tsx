@@ -4,7 +4,12 @@ import CoverGuard from '../CoverGuard';
 
 beforeEach(() => {
   (window as any).mfl = {
+    settings: {
+      // 总开关开 + 封面子项开 → 默认隐藏
+      get: vi.fn(async () => ({ privacy_mode: '1', privacy_cover: '1', privacy_text: '0' })),
+    },
     cover: {
+      listImages: vi.fn(async () => ({ images: [{ rel_path: 'c.jpg', name: 'c.jpg' }], cover_path: 'c.jpg' })),
       getCover: vi.fn(async (_id: number, opts?: { display?: boolean }) =>
         opts?.display ? { kind: 'file' as const, mime: 'image/jpeg', base64: 'AAAA' } : null),
     },

@@ -1,10 +1,45 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import type { FilmDetail, FilmFileRow } from '../api/types';
+import type { FilmDetail, FilmFileRow, FilmPathStatus } from '../api/types';
 import CoverGuard from '../components/CoverGuard';
 import { useToast } from '../components/Toaster';
+import { PrivacyText, textPrivacyActive, usePrivacySettings } from '../hooks/usePrivacySettings';
 
 const mfl = (): any => (window as any).mfl;
+
+/** 从列表页带入的导航 state：来源 + 可切换的影片 id 序列 */
+type DetailNavState = {
+  from?: 'library' | 'actors';
+  listIds?: number[];
+};
+
+const LIST_IDS_KEY = 'mfl:detailListIds';
+
+/**
+ * 详情页大标题：避免「编号 + 标题」重复。
+ * 例：code=xvsr-599, title="XVSR-599 絶対本番…" → 只显示 title。
+ * 若标题不含编号（或无标题）→ 显示 "CODE 标题" / 仅 CODE / 仅标题。
+ */
+function formatDetailHeading(code: string | null | undefined, title: string | null | undefined): string {
+  const c = (code ?? '').trim();
+  const t = (title ?? '').trim();
+  if (!c && !t) return '';
+  if (!c) return t;
+  if (!t) return c.toUpperCase();
+
+  const codeUpper = c.toUpperCase();
+  // 去掉编号里常见分隔符再比一次（XVSR-599 / XVSR599 / xvsr_599）
+  const codeCompact = codeUpper.replace(/[-_\s]/g, '');
+  const titleUpper = t.toUpperCase();
+  const titleCompact = titleUpper.replace(/[-_\s]/g, '');
+
+  const titleHasCode =
+    titleUpper.includes(codeUpper)
+    || (codeCompact.length >= 3 && titleCompact.includes(codeCompact));
+
+  if (titleHasCode) return t;
+  return `${codeUpper} ${t}`;
+}
 
 // 编辑表单字段定义：依次为 字段键 / 中文标签 / 是否长文本。
 // 用数组驱动渲染可保证每个 input 都带可见 label——这正是 Q6 缺失的部分。
@@ -23,12 +58,40 @@ export default function FilmDetailPage() {
   // location.state.from 标记来源页。返回时：
   // - actors / library → navigate(-1)，保留来源页的 query（排序/选中演员）与 history 上的滚动恢复。
   // - 无 state（刷新/外链）→ 回 /library。
+  // listIds：来源列表的影片 id 顺序，用于详情内 ←/→ 切换。
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from;
+  const navState = (location.state as DetailNavState | null) ?? null;
+  const from = navState?.from;
   const backWithHistory = from === 'actors' || from === 'library';
+  // 列表 id 存在 sessionStorage 备份：刷新详情页后仍尽量能切换（同一会话内）。
+  const listIds = useMemo(() => {
+    const fromState = navState?.listIds?.filter(n => Number.isFinite(n) && n > 0) ?? [];
+    if (fromState.length > 0) {
+      try { sessionStorage.setItem(LIST_IDS_KEY, JSON.stringify(fromState)); } catch { /* ignore */ }
+      return fromState;
+    }
+    try {
+      const raw = sessionStorage.getItem(LIST_IDS_KEY);
+      if (!raw) return [] as number[];
+      const parsed = JSON.parse(raw) as number[];
+      return Array.isArray(parsed) ? parsed.filter(n => Number.isFinite(n) && n > 0) : [];
+    } catch {
+      return [] as number[];
+    }
+  }, [navState?.listIds]);
+
+  const filmId = Number(id);
+  const listIndex = listIds.indexOf(filmId);
+  const hasList = listIds.length > 1 && listIndex >= 0;
+  const prevId = hasList ? listIds[listIndex - 1] : undefined;
+  const nextId = hasList ? listIds[listIndex + 1] : undefined;
+
   const toast = useToast();
+  const privacy = usePrivacySettings();
+  const blurText = textPrivacyActive(privacy);
   const [film, setFilm] = useState<FilmDetail | null>(null);
   const [files, setFiles] = useState<FilmFileRow[]>([]);
+  const [pathStatus, setPathStatus] = useState<FilmPathStatus | null>(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<any>({});
   // 演员编辑：自动补全输入 + 已选 tags + 库中不存在则新建演员。
@@ -40,11 +103,54 @@ export default function FilmDetailPage() {
   const [scraping, setScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState<string | null>(null);
 
+  /** 在列表中切换详情：保留 from + listIds，用 replace 避免堆叠 history。 */
+  const goSibling = useCallback((targetId: number | undefined) => {
+    if (targetId == null) return;
+    nav(`/film/${targetId}`, {
+      replace: true,
+      state: {
+        from: from ?? 'library',
+        listIds,
+      } satisfies DetailNavState,
+    });
+  }, [nav, from, listIds]);
+
+  // 左右方向键切换；在输入框/可编辑区时不拦截。
+  useEffect(() => {
+    if (!hasList) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return;
+      }
+      if (editing || scraping) return;
+      if (e.key === 'ArrowLeft') {
+        if (prevId != null) {
+          e.preventDefault();
+          goSibling(prevId);
+        }
+      } else if (e.key === 'ArrowRight') {
+        if (nextId != null) {
+          e.preventDefault();
+          goSibling(nextId);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [hasList, prevId, nextId, editing, scraping, goSibling]);
+
   useEffect(() => {
     if (!id) return;
     const n = Number(id);
+    let cancelled = false;
+    setFilm(null);
+    setFiles([]);
+    setPathStatus(null);
     mfl().library.get(n).then((f: FilmDetail | null) => {
-      if (f) {
+      if (!cancelled && f) {
         setFilm(f);
         setForm({
           code: f.code ?? '',
@@ -57,8 +163,20 @@ export default function FilmDetailPage() {
         // 详情页返回的 actors 直接作为已选初值；保留 id+name 两个属性。
         setSelectedActors(f.actors.map(a => ({ id: a.id, name: a.name })));
       }
-    }).catch((e: unknown) => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' }));
-    mfl().files.listByFilm(n).then((r: FilmFileRow[]) => setFiles(r)).catch((e: unknown) => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' }));
+    }).catch((e: unknown) => {
+      if (!cancelled) toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    });
+    mfl().files.listByFilm(n).then((r: FilmFileRow[]) => {
+      if (!cancelled) setFiles(r);
+    }).catch((e: unknown) => {
+      if (!cancelled) toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    });
+    mfl().files.pathStatus(n).then((r: FilmPathStatus) => {
+      if (!cancelled) setPathStatus(r);
+    }).catch(() => {
+      if (!cancelled) setPathStatus({ valid: false, reason: 'unreadable' });
+    });
+    return () => { cancelled = true; };
   }, [id]);
 
   if (!film) return <div>加载中…</div>;
@@ -171,7 +289,24 @@ export default function FilmDetailPage() {
       await mfl().files.restat(film.id);
       const r = await mfl().files.listByFilm(film.id);
       setFiles(r);
+      setPathStatus(await mfl().files.pathStatus(film.id));
       toast.push({ text: '已重新枚举文件', kind: 'success' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    }
+  };
+
+  /** 手动切换刮削标记：已刮削 ↔ 未刮削（写 films.scraped_at）。 */
+  const toggleScrapedMark = async () => {
+    if (!film) return;
+    const next = film.scraped_at ? null : Date.now();
+    try {
+      await mfl().library.update(film.id, { scraped_at: next });
+      setFilm({ ...film, scraped_at: next });
+      toast.push({
+        text: next ? '已标记为「已刮削」' : '已取消刮削标记',
+        kind: 'success',
+      });
     } catch (e: unknown) {
       toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
     }
@@ -228,30 +363,98 @@ export default function FilmDetailPage() {
     }
   };
 
+  const detailHeading = formatDetailHeading(film.code, film.title);
+
   return (
     <div>
-      {/* 返回：来自演员页/影片库时 history.back，保住排序 query 与滚动恢复；
-          其它入口（刷新/外链）回 /library。 */}
-      <button onClick={() => (backWithHistory ? nav(-1) : nav('/library'))}>返回</button>
-      {/* 编号默认大写显示；存储仍保留原大小写，仅在渲染层 toUpperCase。 */}
-      <h2>{film.code ? film.code.toUpperCase() : ''} {film.title}</h2>
+      {/* 顶部导航：返回 + 列表内前后切换（按钮 / ← → 键） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <button type="button" onClick={() => (backWithHistory ? nav(-1) : nav('/library'))}>返回</button>
+        {hasList && (
+          <>
+            <button
+              type="button"
+              disabled={prevId == null || editing || scraping}
+              onClick={() => goSibling(prevId)}
+              title="上一片（←）"
+            >
+              ← 上一片
+            </button>
+            <button
+              type="button"
+              disabled={nextId == null || editing || scraping}
+              onClick={() => goSibling(nextId)}
+              title="下一片（→）"
+            >
+              下一片 →
+            </button>
+            <span style={{ color: '#888', fontSize: 12 }}>
+              {listIndex + 1} / {listIds.length}
+              <span style={{ marginLeft: 8, color: '#666' }}>快捷键 ← →</span>
+            </span>
+          </>
+        )}
+      </div>
+      {/* 刮削标记在标题前，位置固定；标题若已含编号则不重复前缀编号；标题单行省略 */}
+      <h2 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'nowrap', minWidth: 0, overflow: 'hidden' }}>
+        <button
+          type="button"
+          onClick={() => void toggleScrapedMark()}
+          title={film.scraped_at
+            ? `刮削于 ${new Date(film.scraped_at).toLocaleString()}（点击取消标记）`
+            : '点击标记为已刮削（批量刮削会跳过）'}
+          style={{
+            fontSize: 12,
+            fontWeight: 500,
+            padding: '2px 10px',
+            borderRadius: 10,
+            cursor: 'pointer',
+            flexShrink: 0,
+            border: film.scraped_at ? '1px solid #2a5a40' : '1px solid #444',
+            background: film.scraped_at ? '#1e3a2f' : '#2a2a2a',
+            color: film.scraped_at ? '#8f8' : '#888',
+          }}
+        >
+          {film.scraped_at ? '已刮削' : '未刮削'}
+        </button>
+        <PrivacyText
+          blur={blurText}
+          style={{
+            fontWeight: 700,
+            display: 'block',
+            minWidth: 0,
+            flex: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span title={detailHeading || undefined}>{detailHeading}</span>
+        </PrivacyText>
+      </h2>
       <div style={{ display: 'flex', gap: 16 }}>
         <CoverGuard filmId={film.id} />
         <div style={{ flex: 1 }}>
           {!editing ? (
             <>
+              {/* 编号永不模糊；其它字段在隐私文字开启时模糊，按住查看 */}
               <Row k="编号" v={film.code ? film.code.toUpperCase() : null} />
-              <Row k="后缀" v={film.locale} />
-              <Row k="标签" v={film.tags.join(', ')} />
-              <Row k="演员" v={film.actors.map(a => a.name).join(', ')} />
-              <Row k="题材" v={film.genres.map(g => g.name).join(', ')} />
-              <Row k="父目录" v={film.parent_dir_name} />
-              <Row k="路径" v={film.abs_path} />
-              <Row k="备注" v={film.notes} />
-              {/* 同编号兄弟影片：列出其他多路径，提示用户存在重复。 */}
+              <Row k="后缀" v={<PrivacyText blur={blurText}>{film.locale ?? '—'}</PrivacyText>} />
+              <Row k="标签" v={<PrivacyText blur={blurText}>{film.tags.join(', ') || '—'}</PrivacyText>} />
+              <Row k="演员" v={<PrivacyText blur={blurText}>{film.actors.map(a => a.name).join(', ') || '—'}</PrivacyText>} />
+              <Row k="题材" v={<PrivacyText blur={blurText}>{film.genres.map(g => g.name).join(', ') || '—'}</PrivacyText>} />
+              <Row k="刮削" v={<PrivacyText blur={blurText}>{film.scraped_at ? new Date(film.scraped_at).toLocaleString() : '未刮削'}</PrivacyText>} />
+              <Row k="父目录" v={<PrivacyText blur={blurText}>{film.parent_dir_name || '—'}</PrivacyText>} />
+              <Row k="路径" v={
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%' }}>
+                  <PathStatusIcon status={pathStatus} />
+                  <PrivacyText blur={blurText}>{film.abs_path || '—'}</PrivacyText>
+                </span>
+              } />
+              <Row k="备注" v={<PrivacyText blur={blurText}>{film.notes || '—'}</PrivacyText>} />
               {film.same_code_films && film.same_code_films.length > 0 && (
                 <Row k="同编号" v={
-                  <span>
+                  <PrivacyText blur={blurText} as="span">
                     另有 {film.same_code_films.length} 份同编号影片：
                     {film.same_code_films.map((s, i) => (
                       <span key={s.id}>
@@ -261,7 +464,7 @@ export default function FilmDetailPage() {
                         </a>
                       </span>
                     ))}
-                  </span>
+                  </PrivacyText>
                 } />
               )}
               <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -359,4 +562,46 @@ export default function FilmDetailPage() {
 
 function Row({ k, v }: { k: string; v: any }) {
   return <div style={{ marginBottom: 2 }}><span style={{ color: '#999', marginRight: 8 }}>{k}:</span>{v ?? '—'}</div>;
+}
+
+function PathStatusIcon({ status }: { status: FilmPathStatus | null }) {
+  const title = status == null
+    ? '正在检查影片目录'
+    : status.valid
+      ? '影片目录有效'
+      : status.reason === 'not_directory'
+        ? '保存的路径不是目录'
+        : status.reason === 'unreadable'
+          ? '影片目录无法访问'
+          : status.reason === 'film_not_found'
+            ? '影片记录不存在'
+            : '影片目录不存在';
+  const color = status == null ? '#999' : status.valid ? '#86efac' : '#fca5a5';
+  const border = status == null ? '#555' : status.valid ? '#2f6f46' : '#7f3333';
+  const background = status == null ? '#2a2a2a' : status.valid ? '#173b27' : '#4a2020';
+
+  return (
+    <span
+      role="img"
+      aria-label={title}
+      title={title}
+      style={{
+        width: 16,
+        height: 16,
+        borderRadius: '50%',
+        border: `1px solid ${border}`,
+        background,
+        color,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        fontSize: 11,
+        lineHeight: 1,
+        fontWeight: 700,
+      }}
+    >
+      {status == null ? '…' : status.valid ? '✓' : '!'}
+    </span>
+  );
 }

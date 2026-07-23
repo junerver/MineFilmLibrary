@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { ActorRow, FilmRow } from '../api/types';
+import type { ActorJavbusData, ActorRow, FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
 
@@ -12,6 +12,55 @@ const mfl = (): any => (window as any).mfl;
 const LIST_SCROLL_KEY = 'mfl:actorListScroll';
 /** 跨 StrictMode 双挂载共享的待恢复 scrollY；undefined=尚未读 storage */
 let cachedPendingScroll: number | null | undefined;
+
+type ActorMetaForm = {
+  name: string;
+  category: string;
+  notes: string;
+  aliases: string;
+  javbus_url: string;
+  birthday: string;
+  age: string;
+  height: string;
+  cup: string;
+  bust: string;
+  waist: string;
+  hips: string;
+  measurements: string;
+  hobby: string;
+};
+
+const ACTOR_PROFILE_KEYS = [
+  'birthday', 'age', 'height', 'cup', 'bust', 'waist', 'hips', 'measurements', 'hobby',
+] as const;
+
+const ACTOR_PROFILE_LABELS: Record<(typeof ACTOR_PROFILE_KEYS)[number], string> = {
+  birthday: '生日',
+  age: '年龄',
+  height: '身高',
+  cup: '罩杯',
+  bust: '胸围',
+  waist: '腰围',
+  hips: '臀围',
+  measurements: '三围',
+  hobby: '爱好',
+};
+
+function normalizeProfileLabel(value: string): string {
+  return value.toLowerCase().replace(/[\s：:._-]/g, '');
+}
+
+const KNOWN_PROFILE_LABELS = new Set([
+  '生日', '出生日期', 'birthday', '生年月日',
+  '年龄', '年齡', 'age',
+  '身高', 'height',
+  '罩杯', 'cup',
+  '胸围', '胸圍', 'bust', 'b',
+  '腰围', '腰圍', 'waist', 'w',
+  '臀围', '臀圍', 'hips', 'hip', 'h',
+  '三围', '三圍', 'measurements',
+  '爱好', '愛好', '兴趣', '興趣', 'hobby', '趣味',
+].map(normalizeProfileLabel));
 
 function readPendingScroll(): number | null {
   if (cachedPendingScroll !== undefined) return cachedPendingScroll;
@@ -46,10 +95,18 @@ export default function ActorPage() {
   // 左侧演员列表的搜索框：纯前端按 name/aliases 子串过滤，没有 IPC 往返。
   // 大小写不敏感以应对大小写不一的别名（例如 0-Ogura vs ogura）。
   const [actorSearch, setActorSearch] = useState('');
-  // 演员元数据编辑表单：名称 / 分类 / 备注 / 别名 都嵌在同一表单里。
+  // 演员元数据编辑表单：名称 / 分类 / 备注 / 别名 / JavBus 地址都嵌在同一表单里。
   // 没有独立的"别名/合并"面板——别名作为元数据的一部分。
   const [metaEditing, setMetaEditing] = useState(false);
-  const [metaForm, setMetaForm] = useState<{ name: string; category: string; notes: string; aliases: string }>({ name: '', category: '', notes: '', aliases: '' });
+  const [metaForm, setMetaForm] = useState<ActorMetaForm>({
+    name: '', category: '', notes: '', aliases: '', javbus_url: '',
+    birthday: '', age: '', height: '', cup: '', bust: '', waist: '', hips: '', measurements: '', hobby: '',
+  });
+  const [actorJavbusData, setActorJavbusData] = useState<ActorJavbusData | null>(null);
+  const [actorScraping, setActorScraping] = useState(false);
+  const [actorTab, setActorTab] = useState<'films' | 'works'>('films');
+  const selectedRef = useRef<number | null>(selected);
+  selectedRef.current = selected;
   // 合并：把「当前选中」并入目标演员；当前名会变成目标的别名（适合中文名 / 假名）。
   // 目标可用下拉或手动输入自动匹配（名称 / 别名）。
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
@@ -174,15 +231,33 @@ export default function ActorPage() {
     : actors;
 
   const selectedActor = actors.find(a => a.id === selected) ?? null;
+  const scrapedProfileName = actorJavbusData?.profile?.name?.trim() || null;
+  const extraProfileFields = (actorJavbusData?.profile?.fields ?? []).filter(field =>
+    !KNOWN_PROFILE_LABELS.has(normalizeProfileLabel(field.label)),
+  );
 
   // 切换选中演员时清空影片列表，并关掉可能开着的编辑表单，避免看到上一个演员的初值。
   useEffect(() => {
-    if (selected == null) { setFilms([]); return; }
+    if (selected == null) {
+      setFilms([]);
+      setActorJavbusData(null);
+      return;
+    }
+    let cancelled = false;
     setMetaEditing(false);
+    setActorScraping(false);
+    setActorJavbusData(null);
+    setActorTab('films');
     setMergeTargetId(null);
     setMergeQuery('');
     setMergeSuggestOpen(false);
-    mfl().actors.films(selected).then(setFilms).catch(() => {});
+    mfl().actors.films(selected).then((rows: FilmRow[]) => {
+      if (!cancelled) setFilms(rows);
+    }).catch(() => {});
+    mfl().actors.getJavbusData(selected).then((data: ActorJavbusData | null) => {
+      if (!cancelled) setActorJavbusData(data);
+    }).catch(() => {});
+    return () => { cancelled = true; };
   }, [selected]);
 
   // 合并目标候选：名称或别名包含输入（排除自己）。
@@ -255,6 +330,16 @@ export default function ActorPage() {
       category: selectedActor.category ?? '',
       notes: selectedActor.notes ?? '',
       aliases: (selectedActor.aliases ?? []).join(', '),
+      javbus_url: selectedActor.javbus_url ?? '',
+      birthday: selectedActor.birthday ?? '',
+      age: selectedActor.age ?? '',
+      height: selectedActor.height ?? '',
+      cup: selectedActor.cup ?? '',
+      bust: selectedActor.bust ?? '',
+      waist: selectedActor.waist ?? '',
+      hips: selectedActor.hips ?? '',
+      measurements: selectedActor.measurements ?? '',
+      hobby: selectedActor.hobby ?? '',
     });
     setMetaEditing(true);
   };
@@ -277,10 +362,17 @@ export default function ActorPage() {
     if (!selected || !selectedActor) return;
     // actors.update：name/category/notes 四个字段。
     // 只下发实际变化的字段，避免覆盖未被渲染的列；空串归一成 null（category/notes）或 undefined（name 还空就什么都不动）。
-    const patch: { name?: string; category?: string | null; notes?: string | null } = {};
+    const patch: Partial<Pick<ActorRow,
+      'name' | 'category' | 'notes' | 'javbus_url' | 'birthday' | 'age' | 'height'
+      | 'cup' | 'bust' | 'waist' | 'hips' | 'measurements' | 'hobby'>> = {};
     if (metaForm.name !== (selectedActor.name ?? '')) patch.name = metaForm.name.trim() || undefined;
     if (metaForm.category !== (selectedActor.category ?? '')) patch.category = metaForm.category.trim() || null;
     if (metaForm.notes !== (selectedActor.notes ?? '')) patch.notes = metaForm.notes || null;
+    if (metaForm.javbus_url.trim() !== (selectedActor.javbus_url ?? '')) patch.javbus_url = metaForm.javbus_url.trim() || null;
+    for (const key of ACTOR_PROFILE_KEYS) {
+      const next = metaForm[key].trim();
+      if (next !== (selectedActor[key] ?? '')) patch[key] = next || null;
+    }
     if (Object.keys(patch).length > 0) {
       try { await mfl().actors.update(selected, patch as any); }
       catch (e: unknown) { toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' }); return; }
@@ -301,8 +393,36 @@ export default function ActorPage() {
     const nothingChanged = Object.keys(patch).length === 0 && newAliases.length === (selectedActor.aliases ?? []).length && newAliases.every(a => oldAliases.has(a));
     if (nothingChanged) toast.push({ text: '没有变化', kind: 'info' });
     else toast.push({ text: '已保存', kind: 'success' });
+    if ('javbus_url' in patch) setActorJavbusData(null);
     setMetaEditing(false);
     reloadActors();
+  };
+
+  const scrapeActorJavbus = async () => {
+    if (!selected || !selectedActor?.javbus_url || actorScraping) return;
+    setActorScraping(true);
+    try {
+      const actorId = selected;
+      const result = await mfl().actors.scrapeJavbus(actorId) as ActorJavbusData & { scrapedAt: number };
+      if (selectedRef.current === actorId) {
+        setActorJavbusData(result);
+        setActorTab('works');
+      }
+      toast.push({ text: `演员资料已更新，读取 ${result.works.length} 部最新作品`, kind: 'success' });
+      reloadActors();
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      if (selectedRef.current === selected) setActorScraping(false);
+    }
+  };
+
+  const openActorWork = async (url: string) => {
+    try {
+      await mfl().actors.openExternal(url);
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    }
   };
 
   return (
@@ -327,16 +447,49 @@ export default function ActorPage() {
         minHeight: 0,
         height: '100%',
       }}>
-        <input
-          value={actorSearch}
-          onChange={e => setActorSearch(e.target.value)}
-          placeholder="搜索 名称/别名"
-          style={{ padding: 4, background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, flexShrink: 0 }}
-        />
+        {/* 搜索框独立一层，避免列表滚动层/右侧绝对定位菜单在叠层上挡住点击 */}
+        <div
+          style={{ flexShrink: 0, position: 'relative', zIndex: 2 }}
+          onMouseDown={e => {
+            // 与元数据表单相同：阻止冒泡，降低 Electron 下焦点被外层抢走的概率
+            e.stopPropagation();
+          }}
+        >
+          <input
+            type="text"
+            value={actorSearch}
+            onChange={e => setActorSearch(e.target.value)}
+            placeholder="搜索 名称/别名"
+            // 点击后若未聚焦则主动 focus（Electron 偶发点不中）
+            onMouseDown={e => {
+              e.stopPropagation();
+              const el = e.currentTarget;
+              // 不 preventDefault，保留浏览器默认选区/光标行为
+              if (document.activeElement !== el) {
+                el.focus({ preventScroll: true });
+              }
+            }}
+            onClick={e => {
+              const el = e.currentTarget;
+              if (document.activeElement !== el) {
+                el.focus({ preventScroll: true });
+              }
+            }}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: 4,
+              background: '#2a2a2a',
+              color: '#fff',
+              border: '1px solid #444',
+              borderRadius: 4,
+            }}
+          />
+        </div>
         {/* 真正的滚动容器：必须有受限高度 + overflowY:auto，scrollTop 才有意义。 */}
         <div
           ref={listScrollRef}
-          style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}
+          style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4, position: 'relative', zIndex: 0 }}
         >
           {visibleActors.length === 0 && <div style={{ color: '#666', fontSize: 12, padding: 4 }}>无匹配演员</div>}
           {visibleActors.map(a => (
@@ -368,6 +521,14 @@ export default function ActorPage() {
                 style={{ marginLeft: 8 }}
               >
                 {metaEditing ? '取消编辑' : '编辑元数据'}
+              </button>
+              <button
+                type="button"
+                disabled={actorScraping || !selectedActor.javbus_url}
+                onClick={() => void scrapeActorJavbus()}
+                title={selectedActor.javbus_url ? '从已配置的演员主页更新资料与最新作品' : '请先编辑元数据并配置 JavBus 主页'}
+              >
+                {actorScraping ? '刮削中…' : '刮削演员主页'}
               </button>
             </div>
 
@@ -401,6 +562,28 @@ export default function ActorPage() {
                   />
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ color: '#999' }}>JavBus 主页地址</span>
+                  <input
+                    type="url"
+                    value={metaForm.javbus_url}
+                    onChange={e => setMetaForm(f => ({ ...f, javbus_url: e.target.value }))}
+                    placeholder="例如：已配置站点/star/演员ID"
+                    style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}
+                  />
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 6 }}>
+                  {ACTOR_PROFILE_KEYS.map(key => (
+                    <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <span style={{ color: '#999' }}>{ACTOR_PROFILE_LABELS[key]}</span>
+                      <input
+                        value={metaForm[key]}
+                        onChange={e => setMetaForm(f => ({ ...f, [key]: e.target.value }))}
+                        style={{ minWidth: 0, background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <span style={{ color: '#999' }}>备注</span>
                   <textarea
                     value={metaForm.notes}
@@ -427,16 +610,44 @@ export default function ActorPage() {
                 </div>
               </div>
             ) : (
-              <div style={{ marginBottom: 12, padding: 8, background: '#222', borderRadius: 4, fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <ReadField k="分类" v={selectedActor.category} />
-                <ReadField k="备注" v={selectedActor.notes} multiline />
-                <ReadField k="别名" v={(selectedActor.aliases ?? []).join(', ') || null} />
+              <div style={{ marginBottom: 12, padding: 8, background: '#222', borderRadius: 4, fontSize: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '4px 16px' }}>
+                  <ReadField k="分类" v={selectedActor.category} />
+                  <ReadField k="生日" v={selectedActor.birthday} />
+                  <ReadField k="年龄" v={selectedActor.age} />
+                  <ReadField k="身高" v={selectedActor.height} />
+                  <ReadField k="罩杯" v={selectedActor.cup} />
+                  <ReadField k="胸围" v={selectedActor.bust} />
+                  <ReadField k="腰围" v={selectedActor.waist} />
+                  <ReadField k="臀围" v={selectedActor.hips} />
+                  <ReadField k="三围" v={selectedActor.measurements} />
+                  <ReadField k="爱好" v={selectedActor.hobby} />
+                  <ReadField k="JavBus 主页" v={selectedActor.javbus_url} />
+                  <ReadField
+                    k="主页刮削时间"
+                    v={selectedActor.javbus_scraped_at ? new Date(selectedActor.javbus_scraped_at).toLocaleString() : null}
+                  />
+                  <ReadField k="别名" v={(selectedActor.aliases ?? []).join(', ') || null} />
+                  {scrapedProfileName && scrapedProfileName !== selectedActor.name && (
+                    <ReadField k="网页姓名" v={scrapedProfileName} />
+                  )}
+                </div>
+                {extraProfileFields.length > 0 && (
+                  <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #333' }}>
+                    <div style={{ color: '#999', marginBottom: 4 }}>网页其他资料</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '4px 16px' }}>
+                      {extraProfileFields.map(field => <ReadField key={`${field.label}:${field.value}`} k={field.label} v={field.value} />)}
+                    </div>
+                  </div>
+                )}
+                {selectedActor.notes && <div style={{ marginTop: 6 }}><ReadField k="备注" v={selectedActor.notes} multiline /></div>}
               </div>
             )}
 
-            {/* 合并同人：下拉 + 输入自动匹配（名称/别名）。 */}
-            <div style={{ marginBottom: 12, padding: 8, background: '#1a2228', borderRadius: 4, fontSize: 12, border: '1px solid #333' }}>
-              <div style={{ color: '#aaa', marginBottom: 6 }}>合并到其他演员</div>
+            {/* 合并同人属于低频且不可逆操作，默认折叠以减少页面高度。 */}
+            <details style={{ marginBottom: 12, padding: 8, background: '#1a2228', borderRadius: 4, fontSize: 12, border: '1px solid #333' }}>
+              <summary style={{ color: '#aaa', cursor: 'pointer', userSelect: 'none' }}>合并到其他演员</summary>
+              <div style={{ marginTop: 8 }}>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 220, position: 'relative' }}>
                   <input
@@ -510,20 +721,48 @@ export default function ActorPage() {
               <div style={{ color: '#666', fontSize: 11, marginTop: 6 }}>
                 例：选中「みかみ ゆあ」→ 输入或选择「三上悠亜」→ 合并。假名会变成别名，之后刮削到假名也会归到中文名下。
               </div>
+              </div>
+            </details>
+
+            <div
+              role="tablist"
+              aria-label="演员影片"
+              style={{ display: 'flex', gap: 2, borderBottom: '1px solid #3a3a3a', marginBottom: 8 }}
+            >
+              <ActorTabButton active={actorTab === 'films'} onClick={() => setActorTab('films')}>
+                本地影片 ({films.length})
+              </ActorTabButton>
+              <ActorTabButton active={actorTab === 'works'} onClick={() => setActorTab('works')}>
+                最新作品 ({actorJavbusData?.works?.length ?? 0})
+              </ActorTabButton>
             </div>
 
-            <FilmTable
-              rows={films}
-              hideActorsColumn
-              onRowDoubleClick={(film) => {
-                // 进详情前强制再存一次左侧列表 scrollTop。
-                const el = listScrollRef.current;
-                if (el) {
-                  saveListScroll(el.scrollTop);
-                }
-                nav(`/film/${film.id}`, { state: { from: 'actors' } });
-              }}
-            />
+            {actorTab === 'films' ? (
+              <div role="tabpanel" aria-label="本地影片">
+                <FilmTable
+                  rows={films}
+                  hideActorsColumn
+                  onRowDoubleClick={(film) => {
+                    // 进详情前强制再存一次左侧列表 scrollTop。
+                    const el = listScrollRef.current;
+                    if (el) {
+                      saveListScroll(el.scrollTop);
+                    }
+                    // 带上当前演员下的影片 id 序列，详情页可用 ←/→ 切换。
+                    nav(`/film/${film.id}`, {
+                      state: {
+                        from: 'actors',
+                        listIds: films.map(f => f.id),
+                      },
+                    });
+                  }}
+                />
+              </div>
+            ) : (
+              <div role="tabpanel" aria-label="最新作品">
+                <ActorWorksPanel data={actorJavbusData} onOpen={openActorWork} />
+              </div>
+            )}
           </>
         ) : <div>选择左侧演员</div>}
       </div>
@@ -537,4 +776,78 @@ function ReadField({ k, v, multiline }: { k: string; v: string | null; multiline
     <span style={{ color: '#999', marginRight: 8 }}>{k}:</span>
     <span style={{ whiteSpace: multiline ? 'pre-wrap' : 'normal' }}>{v}</span>
   </div>;
+}
+
+function ActorTabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      style={{
+        border: 0,
+        borderBottom: active ? '2px solid #6aa8ff' : '2px solid transparent',
+        borderRadius: 0,
+        padding: '6px 10px',
+        background: active ? '#252d38' : 'transparent',
+        color: active ? '#fff' : '#999',
+        cursor: 'pointer',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ActorWorksPanel({
+  data,
+  onOpen,
+}: {
+  data: ActorJavbusData | null;
+  onOpen: (url: string) => void;
+}) {
+  const works = Array.isArray(data?.works) ? data.works : [];
+  if (!data) {
+    return <div style={{ color: '#666', fontSize: 12, padding: 8 }}>尚未刮削演员主页，请先点击“刮削演员主页”。</div>;
+  }
+  if (works.length === 0) {
+    return <div style={{ color: '#666', fontSize: 12, padding: 8 }}>未发现最新作品。</div>;
+  }
+  return (
+    <section>
+      <div style={{ color: '#888', fontSize: 12, marginBottom: 6 }}>点击作品后使用系统浏览器打开 JavBus 页面</div>
+      <div role="list" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {works.map((work, index) => (
+          <button
+            key={`${work.url}:${index}`}
+            type="button"
+            role="listitem"
+            onClick={() => onOpen(work.url)}
+            title={work.url}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '110px 105px minmax(0, 1fr) 24px',
+              gap: 8,
+              alignItems: 'center',
+              width: '100%',
+              minHeight: 34,
+              padding: '6px 8px',
+              textAlign: 'left',
+              border: '1px solid #333',
+              borderRadius: 3,
+              background: '#202020',
+              color: '#ddd',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#9fc4ff' }}>{work.code || '—'}</span>
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#999' }}>{work.releaseDate || '—'}</span>
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{work.title}</span>
+            <span aria-hidden="true" style={{ color: '#8ab4f8', textAlign: 'center' }}>↗</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
 }

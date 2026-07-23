@@ -17,9 +17,14 @@ export interface MflApi {
   actors: {
     list(): Promise<T.ActorRow[]>;
     create(name: string, raw?: string, cat?: string, notes?: string): Promise<number>;
-    update(id: number, patch: { name?: string; category?: string | null; notes?: string | null }): Promise<boolean>;
+    update(id: number, patch: Partial<Pick<T.ActorRow,
+      'name' | 'category' | 'notes' | 'javbus_url' | 'birthday' | 'age' | 'height'
+      | 'cup' | 'bust' | 'waist' | 'hips' | 'measurements' | 'hobby'>>): Promise<boolean>;
     delete(id: number): Promise<boolean>;
     films(id: number): Promise<T.FilmRow[]>;
+    getJavbusData(id: number): Promise<T.ActorJavbusData | null>;
+    scrapeJavbus(id: number): Promise<T.ActorJavbusData & { scrapedAt: number }>;
+    openExternal(url: string): Promise<boolean>;
     quickFind(q: string): Promise<{ id: number; name: string }[]>;
     listAliases(id: number): Promise<string[]>;
     addAlias(id: number, alias: string): Promise<boolean>;
@@ -43,11 +48,13 @@ export interface MflApi {
   };
   files: {
     listByFilm(id: number): Promise<T.FilmFileRow[]>;
+    pathStatus(id: number): Promise<T.FilmPathStatus>;
     openInFolder(id: number): Promise<boolean>;
     restat(id: number): Promise<boolean>;
   };
   cover: {
-    getCover(id: number, opts?: { display?: boolean }): Promise<T.CoverResult | null>;
+    getCover(id: number, opts?: { display?: boolean; rel_path?: string }): Promise<T.CoverResult | null>;
+    listImages(id: number): Promise<{ images: { rel_path: string; name: string }[]; cover_path: string | null }>;
     upload(id: number, fileName: string, base64: string): Promise<number>;
     clear(id: number): Promise<boolean>;
   };

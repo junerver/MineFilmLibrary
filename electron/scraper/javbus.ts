@@ -104,6 +104,9 @@ export async function fetchText(url: string, timeoutMs = 30000): Promise<string>
     const res = await electronFetch(url, timeoutMs, defaultHeaders({
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       Referer: url,
+      // JavBus 的年龄确认页以 existmag Cookie 记录确认状态；没有该值时返回的
+      // 是 driver-verify HTML，而不是影片/演员页面。
+      Cookie: 'existmag=all',
     }));
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     const text = await res.text();
@@ -119,6 +122,87 @@ export async function fetchText(url: string, timeoutMs = 30000): Promise<string>
       + '。若浏览器能打开但应用不能，请确认系统代理已开启（本机常见 127.0.0.1:7890）；应用已改用 Electron 网络栈走系统代理。'
       + ` URL=${url}`
     );
+  }
+}
+
+function isVerificationOrChallengePage(html: string): boolean {
+  return /age\s+verification|id\s*=\s*["']ageVerify["']|年龄验证|just a moment|checking your browser|cf-browser-verification/i.test(html);
+}
+
+/**
+ * 当站点把普通请求送到年龄确认/挑战页时，用 Electron 的隐藏 BrowserWindow
+ * 复用 Chromium 会话再读一次最终 DOM。该路径只在解析失败时触发，避免每次
+ * 刮削都启动窗口；远程页面在隔离、无 Node 权限的渲染器中运行。
+ */
+async function fetchRenderedText(url: string, timeoutMs = 30000): Promise<string> {
+  let electron: any;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    electron = require('electron');
+  } catch {
+    throw new Error('当前运行环境不支持隐藏浏览器');
+  }
+  if (!electron?.BrowserWindow || !electron?.session) throw new Error('当前运行环境不支持隐藏浏览器');
+
+  const partition = 'persist:mfl-javbus';
+  const ses = electron.session.fromPartition(partition);
+  try {
+    await ses.cookies.set({ url, name: 'existmag', value: 'all', path: '/' });
+  } catch {
+    // Cookie 写入失败时仍尝试加载，某些镜像不要求该确认值。
+  }
+
+  const win = new electron.BrowserWindow({
+    show: false,
+    webPreferences: {
+      partition,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  try { win.webContents.setUserAgent(UA); } catch { /* use Chromium default if unavailable */ }
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`隐藏浏览器加载超时（${timeoutMs}ms）`)), timeoutMs);
+    });
+    await Promise.race([
+      win.loadURL(url, { httpReferrer: url }),
+      timeout,
+    ]);
+    // 等待年龄确认脚本/页面重定向完成，再读取最终 DOM。
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const html = await win.webContents.executeJavaScript('document.documentElement ? document.documentElement.outerHTML : ""', true);
+    if (!html || typeof html !== 'string') throw new Error('隐藏浏览器未返回页面内容');
+    log.info(TAG, `rendered page ok ${Date.now() - started}ms len=${html.length}`);
+    return html;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
+
+async function fetchJavbusPageHtml(url: string): Promise<string> {
+  let directHtml: string | null = null;
+  let directError: unknown;
+  try {
+    directHtml = await fetchText(url);
+  } catch (error: unknown) {
+    directError = error;
+  }
+
+  if (directHtml && !isVerificationOrChallengePage(directHtml)) return directHtml;
+
+  try {
+    return await fetchRenderedText(url);
+  } catch (renderError: unknown) {
+    // 保留普通请求的具体错误；若普通请求拿到了验证页，则返回渲染错误，
+    // 让 UI 明确知道隐藏浏览器也未能完成站点挑战。
+    if (directError) throw directError;
+    throw renderError;
   }
 }
 
@@ -238,7 +322,7 @@ export async function scrapeJavbus(baseUrl: string, code: string): Promise<Javbu
   const c = normalizeCodeForUrl(code);
   if (!c) throw new Error('影片编号为空，无法刮削');
   const pageUrl = `${base}/${c}`;
-  const html = await fetchText(pageUrl);
+  const html = await fetchJavbusPageHtml(pageUrl);
   return parseJavbusHtml(html, base, c);
 }
 
@@ -259,4 +343,199 @@ export function formatScrapeNotes(r: JavbusScrapeResult): string {
   if (r.label) lines.push(`发行商: ${r.label}`);
   if (r.pageUrl) lines.push(`来源: ${r.pageUrl}`);
   return lines.join('\n');
+}
+
+export interface JavbusActorProfileField {
+  label: string;
+  value: string;
+}
+
+export interface JavbusActorProfile {
+  name: string | null;
+  birthday: string | null;
+  age: string | null;
+  height: string | null;
+  cup: string | null;
+  bust: string | null;
+  waist: string | null;
+  hips: string | null;
+  measurements: string | null;
+  hobby: string | null;
+  fields: JavbusActorProfileField[];
+}
+
+export interface JavbusActorWork {
+  code: string | null;
+  title: string;
+  releaseDate: string | null;
+  url: string;
+}
+
+export interface JavbusActorScrapeResult {
+  pageUrl: string;
+  profile: JavbusActorProfile;
+  works: JavbusActorWork[];
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;?/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(x[0-9a-f]+|[0-9]+);?/gi, (_all, n: string) => {
+      const value = n.toLowerCase().startsWith('x')
+        ? Number.parseInt(n.slice(1), 16)
+        : Number.parseInt(n, 10);
+      return Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+        ? String.fromCodePoint(value)
+        : _all;
+    });
+}
+
+function stripHtml(value: string): string {
+  return decodeHtmlEntities(value.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ''))
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function htmlAttr(tag: string, name: string): string | null {
+  const quoted = new RegExp(`\\b${name}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i').exec(tag);
+  if (quoted) return decodeHtmlEntities(quoted[2]).trim();
+  const bare = new RegExp(`\\b${name}\\s*=\\s*([^\\s>]+)`, 'i').exec(tag);
+  return bare ? decodeHtmlEntities(bare[1]).trim() : null;
+}
+
+export function normalizeActorPageUrl(raw: string): string {
+  const value = (raw ?? '').trim();
+  if (!value) throw new Error('演员 JavBus 主页地址为空');
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error('演员 JavBus 主页地址必须是完整的 http(s) URL'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('演员 JavBus 主页地址必须使用 http 或 https');
+  }
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+function extractActorProfileFields(html: string): JavbusActorProfileField[] {
+  const fields: JavbusActorProfileField[] = [];
+  // JavBus 演员页当前使用 <span class="header">标签:</span> 值的结构。
+  const headerRe = /<span\b[^>]*class\s*=\s*["'][^"']*\bheader\b[^"']*["'][^>]*>([\s\S]*?)<\/span>\s*([\s\S]*?)(?=<\/p>|<\/li>|<br\s*\/?\s*>|<span\b[^>]*class\s*=\s*["'][^"']*\bheader\b|$)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = headerRe.exec(html)) !== null) {
+    const label = stripHtml(m[1]).replace(/[：:]\s*$/, '').trim();
+    const value = stripHtml(m[2]);
+    if (!label || !value || value.length > 300) continue;
+    if (!fields.some(f => f.label === label && f.value === value)) fields.push({ label, value });
+  }
+
+  // 个别镜像去掉 header class 时，保留对常见“标签: 值”段落的兜底。
+  if (fields.length === 0) {
+    const paragraphRe = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+    while ((m = paragraphRe.exec(html)) !== null) {
+      const text = stripHtml(m[1]);
+      const pair = /^([^:：]{1,20})\s*[:：]\s*(.+)$/.exec(text);
+      if (!pair) continue;
+      const label = pair[1].trim();
+      const value = pair[2].trim();
+      if (label && value && !fields.some(f => f.label === label && f.value === value)) fields.push({ label, value });
+    }
+  }
+  return fields;
+}
+
+function fieldValue(fields: JavbusActorProfileField[], aliases: string[]): string | null {
+  const normalized = (value: string) => value.toLowerCase().replace(/[\s：:._-]/g, '');
+  const wanted = aliases.map(normalized);
+  return fields.find(f => wanted.includes(normalized(f.label)))?.value ?? null;
+}
+
+function extractActorName(html: string, fields: JavbusActorProfileField[]): string | null {
+  const fromField = fieldValue(fields, ['姓名', '名字', '名称', 'name', '名前']);
+  if (fromField) return fromField;
+  const starName = /<(?:div|span|h[1-3])\b[^>]*class\s*=\s*["'][^"']*\bstar-name\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|span|h[1-3])>/i.exec(html);
+  if (starName) return stripHtml(starName[1]) || null;
+  // 实站演员页使用 avatar-box > photo-info > span.pb10，而非 star-name。
+  const photoName = /<div\b[^>]*class\s*=\s*["'][^"']*\bphoto-info\b[^"']*["'][^>]*>[\s\S]*?<span\b[^>]*class\s*=\s*["'][^"']*\bpb10\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i.exec(html);
+  if (photoName) return stripHtml(photoName[1]) || null;
+  const avatarImage = /<img\b([^>]*\bsrc\s*=\s*["'][^"']*\/pics\/actress\/[^"']*["'][^>]*)>/i.exec(html);
+  if (avatarImage) {
+    const title = htmlAttr(avatarImage[1], 'title') || htmlAttr(avatarImage[1], 'alt');
+    if (title) return title;
+  }
+  const heading = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  return heading ? stripHtml(heading[1]) || null : null;
+}
+
+function extractActorWorks(html: string, pageUrl: string): JavbusActorWork[] {
+  const works: JavbusActorWork[] = [];
+  const boxRe = /<a\b([^>]*\bmovie-box\b[^>]*)>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = boxRe.exec(html)) !== null) {
+    const href = htmlAttr(m[1], 'href');
+    if (!href) continue;
+    let url: string;
+    try { url = new URL(href, pageUrl).href; }
+    catch { continue; }
+
+    const image = /<img\b([^>]*)>/i.exec(m[2]);
+    const title = (image && (htmlAttr(image[1], 'title') || htmlAttr(image[1], 'alt')))
+      || stripHtml(m[2].replace(/<date\b[\s\S]*?<\/date>/gi, ''));
+    const dates: string[] = [];
+    const dateRe = /<date\b[^>]*>([\s\S]*?)<\/date>/gi;
+    let d: RegExpExecArray | null;
+    while ((d = dateRe.exec(m[2])) !== null) {
+      const value = stripHtml(d[1]);
+      if (value) dates.push(value);
+    }
+    const rawCode = dates[0] || /\/([^/?#]+?)(?:\.html)?(?:[/?#]|$)/i.exec(href)?.[1] || null;
+    const code = rawCode ? rawCode.trim().toUpperCase() : null;
+    const cleanTitle = title?.trim() || code || '未命名作品';
+    const key = `${code ?? ''}|${url}`;
+    if (works.some(w => `${w.code ?? ''}|${w.url}` === key)) continue;
+    works.push({ code, title: cleanTitle, releaseDate: dates[1] ?? null, url });
+  }
+  return works;
+}
+
+/** 解析演员主页；仅返回文字资料和作品链接，不触发图片请求。 */
+export function parseJavbusActorHtml(html: string, pageUrl: string): JavbusActorScrapeResult {
+  const normalizedUrl = normalizeActorPageUrl(pageUrl);
+  if (!html || /just a moment|checking your browser|cf-browser-verification/i.test(html)) {
+    throw new Error('页面被 Cloudflare 拦截，无法读取演员资料');
+  }
+  if (/<title[^>]*>\s*age\s+verification|id\s*=\s*["']ageVerify["']|年龄验证/i.test(html)) {
+    throw new Error('页面需要先完成 JavBus 年龄验证，当前请求未获得演员主页');
+  }
+
+  const fields = extractActorProfileFields(html);
+  const profile: JavbusActorProfile = {
+    name: extractActorName(html, fields),
+    birthday: fieldValue(fields, ['生日', '出生日期', 'birthday', '生年月日']),
+    age: fieldValue(fields, ['年龄', '年齡', 'age']),
+    height: fieldValue(fields, ['身高', 'height']),
+    cup: fieldValue(fields, ['罩杯', 'cup']),
+    bust: fieldValue(fields, ['胸围', '胸圍', 'bust', 'b']),
+    waist: fieldValue(fields, ['腰围', '腰圍', 'waist', 'w']),
+    hips: fieldValue(fields, ['臀围', '臀圍', 'hips', 'hip', 'h']),
+    measurements: fieldValue(fields, ['三围', '三圍', 'measurements']),
+    hobby: fieldValue(fields, ['爱好', '愛好', '兴趣', '興趣', 'hobby', '趣味']),
+    fields,
+  };
+  const works = extractActorWorks(html, normalizedUrl);
+  if (!profile.name && fields.length === 0 && works.length === 0) {
+    throw new Error(`演员主页解析失败（页面结构可能已变化）: ${normalizedUrl}`);
+  }
+  return { pageUrl: normalizedUrl, profile, works };
+}
+
+export async function scrapeJavbusActorPage(pageUrl: string): Promise<JavbusActorScrapeResult> {
+  const normalizedUrl = normalizeActorPageUrl(pageUrl);
+  const html = await fetchJavbusPageHtml(normalizedUrl);
+  return parseJavbusActorHtml(html, normalizedUrl);
 }

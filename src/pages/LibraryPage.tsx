@@ -12,16 +12,29 @@ const mfl = (): MflApi => (window as any).mfl;
 const PAGE_SIZE = 1000;
 // 进详情前保存主内容区 scrollTop，返回时恢复（Layout 主区 id=mfl-main-scroll）。
 const LIST_SCROLL_KEY = 'mfl:libraryListScroll';
+const SCROLL_RESTORE_MAX_FRAMES = 60;
 
 type SortBy = NonNullable<FilmFilter['sort_by']>;
 
 function parseSortBy(raw: string | null): SortBy {
-  if (raw === 'code' || raw === 'actors' || raw === 'title' || raw === 'updated_at' || raw === 'fs_mtime_ms') return raw;
+  if (raw === 'code' || raw === 'actors' || raw === 'title' || raw === 'updated_at' || raw === 'fs_mtime_ms' || raw === 'scraped_at') return raw;
   return 'updated_at';
 }
 
 function parseSortDir(raw: string | null): 'asc' | 'desc' {
   return raw === 'asc' ? 'asc' : 'desc';
+}
+
+function parseIdList(raw: string | null): number[] | undefined {
+  if (!raw) return undefined;
+  const ids = raw.split(',').map(s => Number(s.trim())).filter(n => Number.isFinite(n) && n > 0);
+  return ids.length ? ids : undefined;
+}
+
+function parseStrList(raw: string | null): string[] | undefined {
+  if (!raw) return undefined;
+  const arr = raw.split(',').map(s => s.trim()).filter(Boolean);
+  return arr.length ? arr : undefined;
 }
 
 function filterFromParams(sp: URLSearchParams): FilmFilter {
@@ -32,6 +45,12 @@ function filterFromParams(sp: URLSearchParams): FilmFilter {
     sort_by: parseSortBy(sp.get('sort_by')),
     sort_dir: parseSortDir(sp.get('sort_dir')),
     q: sp.get('q') ?? undefined,
+    // chip 筛选必须进 URL，否则 FilterBar onChange 后立刻被 searchParams 丢掉
+    actors: parseIdList(sp.get('actors')),
+    genres: parseIdList(sp.get('genres')),
+    tags: parseStrList(sp.get('tags')),
+    locales: parseStrList(sp.get('locales')),
+    statuses: parseStrList(sp.get('statuses')) as FilmFilter['statuses'],
   };
 }
 
@@ -42,11 +61,32 @@ function paramsFromFilter(f: FilmFilter): URLSearchParams {
   if (f.sort_by && f.sort_by !== 'updated_at') next.set('sort_by', f.sort_by);
   if (f.sort_dir) next.set('sort_dir', f.sort_dir);
   if (f.sort_by === 'updated_at' && f.sort_dir === 'desc') next.delete('sort_dir');
+  if (f.actors?.length) next.set('actors', f.actors.join(','));
+  if (f.genres?.length) next.set('genres', f.genres.join(','));
+  if (f.tags?.length) next.set('tags', f.tags.join(','));
+  if (f.locales?.length) next.set('locales', f.locales.join(','));
+  if (f.statuses?.length) next.set('statuses', f.statuses.join(','));
   return next;
 }
 
 function getMainScrollEl(): HTMLElement | null {
   return document.getElementById('mfl-main-scroll');
+}
+
+function readSavedListScroll(): number | null {
+  const raw = sessionStorage.getItem(LIST_SCROLL_KEY);
+  const value = raw == null ? 0 : Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function saveListScroll(value: number) {
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  if (normalized > 0) sessionStorage.setItem(LIST_SCROLL_KEY, String(normalized));
+  else clearSavedListScroll();
+}
+
+function clearSavedListScroll() {
+  sessionStorage.removeItem(LIST_SCROLL_KEY);
 }
 
 export default function LibraryPage() {
@@ -63,14 +103,8 @@ export default function LibraryPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
   // 仅表示「本页刚点了启动」的短暂 loading；真正任务在主进程，切页不丢。
   const [startingBatch, setStartingBatch] = useState(false);
-  // 待恢复的 scrollTop：mount 时读 sessionStorage，等 rows 拉完再 apply。
-  const pendingScrollRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    const saved = Number(sessionStorage.getItem(LIST_SCROLL_KEY) ?? '0');
-    if (saved > 0) pendingScrollRef.current = saved;
-    sessionStorage.removeItem(LIST_SCROLL_KEY);
-  }, []);
+  // 恢复成功前一直保留 storage，避免 StrictMode 双挂载或布局尚未完成时丢失位置。
+  const pendingScrollRef = useRef<number | null>(readSavedListScroll());
 
   const setFilter = (f: FilmFilter) => {
     const prev = filter;
@@ -94,13 +128,48 @@ export default function LibraryPage() {
     return () => { cancelled = true; };
   }, [filter]);
 
-  // rows 到位后再恢复滚动（空列表时 scrollHeight 不够，设了也会被钳成 0）。
+  // rows 到位后等待主容器真正可滚动；只有实际恢复成功才清掉保存值。
   useLayoutEffect(() => {
-    if (pendingScrollRef.current == null || loading) return;
-    const el = getMainScrollEl();
-    if (!el) return;
-    el.scrollTop = pendingScrollRef.current;
-    pendingScrollRef.current = null;
+    if (loading || rows.length === 0) return;
+    const target = pendingScrollRef.current ?? readSavedListScroll();
+    if (target == null) return;
+    pendingScrollRef.current = target;
+
+    let cancelled = false;
+    let frame = 0;
+    let attempts = 0;
+
+    const tryRestore = () => {
+      const el = getMainScrollEl();
+      if (!el) return false;
+      const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (maxScroll <= 1) return false;
+
+      const desired = Math.min(target, maxScroll);
+      el.scrollTop = desired;
+      if (Math.abs(el.scrollTop - desired) > 2) return false;
+
+      pendingScrollRef.current = null;
+      clearSavedListScroll();
+      return true;
+    };
+
+    const tick = () => {
+      if (cancelled || tryRestore()) return;
+      attempts += 1;
+      if (attempts >= SCROLL_RESTORE_MAX_FRAMES) {
+        pendingScrollRef.current = null;
+        clearSavedListScroll();
+        return;
+      }
+      frame = requestAnimationFrame(tick);
+    };
+
+    if (!tryRestore()) frame = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
   }, [rows, loading]);
 
   // 翻页时清空勾选（仅本页勾选语义更清晰）。
@@ -112,20 +181,28 @@ export default function LibraryPage() {
   const page = filter.page ?? 1;
   const goto = (p: number) => setSearchParams(paramsFromFilter({ ...filter, page: p }), { replace: true });
 
-  const onSortChange = (key: 'code' | 'actors') => {
+  const onSortChange = (key: NonNullable<FilmFilter['sort_by']>) => {
     if (filter.sort_by === key) {
       const nextDir = filter.sort_dir === 'asc' ? 'desc' : 'asc';
       setSearchParams(paramsFromFilter({ ...filter, sort_dir: nextDir, page: 1 }), { replace: true });
       return;
     }
-    const defaultDir = key === 'code' ? 'desc' : 'asc';
+    // 编号/修改时间默认新的在前；标题/演员/刮削默认升序（未刮削在前）
+    const defaultDir: 'asc' | 'desc' =
+      key === 'code' || key === 'updated_at' || key === 'fs_mtime_ms' ? 'desc' : 'asc';
     setSearchParams(paramsFromFilter({ ...filter, sort_by: key, sort_dir: defaultDir, page: 1 }), { replace: true });
   };
 
   const openDetail = (film: FilmRow) => {
     const el = getMainScrollEl();
-    if (el) sessionStorage.setItem(LIST_SCROLL_KEY, String(el.scrollTop));
-    nav(`/film/${film.id}`, { state: { from: 'library' } });
+    if (el) saveListScroll(el.scrollTop);
+    // 带上当前页影片 id 序列，详情页可用 ←/→ 在列表中切换。
+    nav(`/film/${film.id}`, {
+      state: {
+        from: 'library',
+        listIds: rows.map(r => r.id),
+      },
+    });
   };
 
   const selectedRows = useMemo(
@@ -225,7 +302,12 @@ export default function LibraryPage() {
       </div>
       <FilmTable
         rows={rows}
-        sortKey={filter.sort_by === 'code' || filter.sort_by === 'actors' ? filter.sort_by : null}
+        sortKey={
+          filter.sort_by === 'code' || filter.sort_by === 'actors' || filter.sort_by === 'title'
+            || filter.sort_by === 'updated_at' || filter.sort_by === 'scraped_at'
+            ? filter.sort_by
+            : null
+        }
         sortDir={filter.sort_dir}
         onSortChange={onSortChange}
         onRowDoubleClick={openDetail}

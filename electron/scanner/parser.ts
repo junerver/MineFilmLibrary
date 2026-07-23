@@ -19,9 +19,15 @@ export function parseParentDirName(raw: string, opts: ParentParseOptions): Parse
   return { parent_type: opts.defaultType, name: s || null };
 }
 
+// FC2-PPV 编号中间还有厂商段（例如 FC2-PPV-739673），不能让通用规则
+// 先截成 "FC2"。保留原始大小写和分隔符，便于后续按原编号刮削。
+const FC2_CODE_RE = /^(FC2[-_]?PPV[-_]?\d+)/i;
 const CODE_RE = /^([A-Za-z]+[-_]?[0-9]+)/;
 const LOCALE_RE = /^-([CcUu])/;
 const TAG_RE = /^\s*\[([^\]]+)\]/;
+// 目录末尾常见的画质后缀不是影片标题；只接受明确的独立 token，
+// 避免把类似 "-HDsomething" 的真实标题前缀误吞。
+const DASH_TAG_RE = /^-(FHD|UHD|HD|4K)(?=$|\s|\[)/i;
 
 export function parseFilmDirName(raw: string): ParsedDir {
   let s = raw.trim();
@@ -29,7 +35,7 @@ export function parseFilmDirName(raw: string): ParsedDir {
   let locale: Locale = null;
   const tags: string[] = [];
 
-  const codeM = CODE_RE.exec(s);
+  const codeM = FC2_CODE_RE.exec(s) ?? CODE_RE.exec(s);
   if (codeM) {
     // 保留原大小写与分隔符（避免与测试用例不一致：abc_123 不应被改写）
     code = codeM[1];
@@ -43,6 +49,12 @@ export function parseFilmDirName(raw: string): ParsedDir {
   }
 
   while (true) {
+    const dashTagM = DASH_TAG_RE.exec(s);
+    if (dashTagM) {
+      tags.push(dashTagM[1]);
+      s = s.slice(dashTagM[0].length);
+      continue;
+    }
     const tagM = TAG_RE.exec(s);
     if (!tagM) break;
     const v = tagM[1].trim();

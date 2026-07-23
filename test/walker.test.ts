@@ -66,6 +66,14 @@ describe('walkFilmDirs', () => {
     expect(visited[0].parentDirName).toBe('0-Maria');
   });
 
+  it('uses a configurable maximum directory depth (default 3)', () => {
+    fs.mkdirSync(path.join(tmp, 'groupA', 'groupB', 'groupC', 'FC2-PPV-739673-HD'), { recursive: true });
+    expect(Array.from(walkFilmDirs(tmp))).toHaveLength(0);
+    const visited = Array.from(walkFilmDirs(tmp, 4));
+    expect(visited.map(v => v.filmDirName)).toEqual(['FC2-PPV-739673-HD']);
+    expect(visited[0].parentDirName).toBe('groupC');
+  });
+
   // Q1：`F:\Movie\已处理\其他精品` 这种 root 直接放影片目录的结构。
   // 没有任何 0-/1- 父目录时，应该走平铺根快车道，所有命中影片 parentDirName 都为 ''。
   it('flat root recognizes films directly under root (no actor parents)', () => {

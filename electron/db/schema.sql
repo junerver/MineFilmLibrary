@@ -7,6 +7,18 @@ CREATE TABLE IF NOT EXISTS actors (
   raw_dir_name TEXT,
   category TEXT,
   notes TEXT,
+  javbus_url TEXT,
+  javbus_data_json TEXT,
+  javbus_scraped_at INTEGER,
+  birthday TEXT,
+  age TEXT,
+  height TEXT,
+  cup TEXT,
+  bust TEXT,
+  waist TEXT,
+  hips TEXT,
+  measurements TEXT,
+  hobby TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

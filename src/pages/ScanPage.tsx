@@ -4,6 +4,17 @@ import { useToast } from '../components/Toaster';
 
 const mfl = (): any => (window as any).mfl;
 
+interface ScanResultStats {
+  dir_added: number;
+  dir_updated: number;
+  dir_removed: number;
+  scrape_ok: number;
+  scrape_fail: number;
+  scrape_skipped: number;
+  fallback_applied: number;
+  fallback_fail: number;
+}
+
 export default function ScanPage() {
   const toast = useToast();
   const [roots, setRoots] = useState<ScanRootRow[]>([]);
@@ -26,7 +37,13 @@ export default function ScanPage() {
   const run = async (id: number, mode: 'full' | 'incremental') => {
     const r = mode === 'full' ? await mfl().scanner.runFull(id) : await mfl().scanner.runIncremental(id);
     if (r.ok) {
-      toast.push({ text: `扫描完成 新增 ${r.stats?.dir_added} 更新 ${r.stats?.dir_updated} 移除 ${r.stats?.dir_removed}`, kind: 'success' });
+      const stats = r.stats as ScanResultStats;
+      toast.push({
+        text: `扫描完成：新增 ${stats.dir_added}，文件变化 ${stats.dir_updated}，移除 ${stats.dir_removed}（扫描不删除记录）`
+          + `；新片刮削成功 ${stats.scrape_ok}，失败 ${stats.scrape_fail}，跳过 ${stats.scrape_skipped}`
+          + `；目录兜底 ${stats.fallback_applied}，兜底失败 ${stats.fallback_fail}`,
+        kind: 'success',
+      });
     } else {
       toast.push({ text: r.error ?? '失败', kind: 'error' });
     }

@@ -1,10 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeBaseUrl, normalizeCodeForUrl, parseJavbusHtml, safeFileBase, formatScrapeNotes } from '../electron/scraper/javbus';
+import {
+  normalizeActorPageUrl,
+  normalizeBaseUrl,
+  normalizeCodeForUrl,
+  parseJavbusActorHtml,
+  parseJavbusHtml,
+  safeFileBase,
+  formatScrapeNotes,
+} from '../electron/scraper/javbus';
 
 describe('javbus helpers', () => {
   it('normalizeBaseUrl strips trailing slash', () => {
     expect(normalizeBaseUrl('https://www.javbus.com/')).toBe('https://www.javbus.com');
     expect(normalizeBaseUrl('  https://x.com  ')).toBe('https://x.com');
+  });
+
+  it('normalizes and validates an actor homepage URL', () => {
+    expect(normalizeActorPageUrl(' https://www.javbus.com/star/okq/ ')).toBe('https://www.javbus.com/star/okq');
+    expect(() => normalizeActorPageUrl('www.javbus.com/star/okq')).toThrow(/完整的 http\(s\) URL/);
+    expect(() => normalizeActorPageUrl('ftp://example.com/star/okq')).toThrow(/http 或 https/);
   });
 
   it('normalizeCodeForUrl uppercases and strips locale suffix', () => {
@@ -58,5 +72,81 @@ describe('javbus helpers', () => {
     const notes = formatScrapeNotes(r);
     expect(notes).toContain('发行日期: 2021-05-28');
     expect(notes).toContain('制作商: 変態紳士倶楽部');
+  });
+
+  it('parseJavbusActorHtml extracts profile fields and latest works without images', () => {
+    const html = `
+      <html><body>
+        <div class="star-info">
+          <p><span class="header">姓名:</span> 小川あさ美</p>
+          <p><span class="header">生日:</span> 1985-04-11</p>
+          <p><span class="header">年龄:</span> 41</p>
+          <p><span class="header">身高:</span> 158cm</p>
+          <p><span class="header">罩杯:</span> D</p>
+          <p><span class="header">胸围:</span> 88cm</p>
+          <p><span class="header">腰围:</span> 60cm</p>
+          <p><span class="header">臀围:</span> 86cm</p>
+          <p><span class="header">爱好:</span> 音乐</p>
+        </div>
+        <a class="movie-box" href="/SSIS-001">
+          <img title="SSIS-001 First title" src="/cover.jpg">
+          <date>SSIS-001</date><date>2026-07-01</date>
+        </a>
+        <a href="/ABP-002" class="movie-box">
+          <img alt="ABP-002 Second title" src="/cover-2.jpg">
+          <date>ABP-002</date><date>2026-06-01</date>
+        </a>
+      </body></html>
+    `;
+    const r = parseJavbusActorHtml(html, 'https://www.javbus.com/star/okq');
+    expect(r.pageUrl).toBe('https://www.javbus.com/star/okq');
+    expect(r.profile.name).toBe('小川あさ美');
+    expect(r.profile.birthday).toBe('1985-04-11');
+    expect(r.profile.height).toBe('158cm');
+    expect(r.profile.hobby).toBe('音乐');
+    expect(r.profile.fields).toEqual(expect.arrayContaining([{ label: '罩杯', value: 'D' }]));
+    expect(r.works).toEqual([
+      { code: 'SSIS-001', title: 'SSIS-001 First title', releaseDate: '2026-07-01', url: 'https://www.javbus.com/SSIS-001' },
+      { code: 'ABP-002', title: 'ABP-002 Second title', releaseDate: '2026-06-01', url: 'https://www.javbus.com/ABP-002' },
+    ]);
+  });
+
+  it('parses the real actor-page photo-info shape and preserves extra profile fields', () => {
+    const html = `
+      <div class="avatar-box">
+        <div class="photo-info">
+          <span class="pb10">三上悠亜</span>
+          <p>生日: 1993-08-16</p>
+          <p>年齡: 32</p>
+          <p>身高: 159cm</p>
+          <p>罩杯: F</p>
+          <p>胸圍: 84cm</p>
+          <p>腰圍: 58cm</p>
+          <p>臀圍: 88cm</p>
+          <p>愛好: アイドルDVD鑑賞</p>
+          <p>出生地: 东京</p>
+        </div>
+      </div>
+      <a class="movie-box" href="https://www.javbus.com/OFJE-710">
+        <img src="/pics/thumb/x.jpg" title="最新作品">
+        <date>OFJE-710</date> / <date>2026-06-26</date>
+      </a>
+    `;
+    const r = parseJavbusActorHtml(html, 'https://www.javbus.com/star/okq');
+    expect(r.profile.name).toBe('三上悠亜');
+    expect(r.profile.age).toBe('32');
+    expect(r.profile.hobby).toBe('アイドルDVD鑑賞');
+    expect(r.profile.fields).toEqual(expect.arrayContaining([{ label: '出生地', value: '东京' }]));
+    expect(r.works[0]).toEqual({
+      code: 'OFJE-710',
+      title: '最新作品',
+      releaseDate: '2026-06-26',
+      url: 'https://www.javbus.com/OFJE-710',
+    });
+  });
+
+  it('rejects age verification pages instead of treating them as actor data', () => {
+    expect(() => parseJavbusActorHtml('<title>Age Verification JavBus</title><div id="ageVerify">x</div>', 'https://www.javbus.com/star/okq'))
+      .toThrow(/年龄验证/);
   });
 });

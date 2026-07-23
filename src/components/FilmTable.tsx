@@ -1,12 +1,63 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { FilmRow } from '../api/types';
 import api from '../api';
+import { PrivacyText, textPrivacyActive, usePrivacySettings } from '../hooks/usePrivacySettings';
 
 const STATUS_LABEL: Record<string, string> = { parsed: '完整', partial: '部分', unknown: '未识别' };
 
-// 支持排序的列：与后端 IPC 的 ALLOWED_SORT 表保持一致。
-type SortKey = 'code' | 'actors';
+// 与 library:list ALLOWED_SORT / FilmFilter.sort_by 对齐
+type SortKey = 'code' | 'title' | 'updated_at' | 'actors' | 'scraped_at';
+
+export type FilmTableColumnId = 'code' | 'title' | 'locale' | 'status' | 'updated' | 'actors' | 'scraped';
+
+const COLUMN_DEFS: { id: FilmTableColumnId; label: string; defaultWidth: number; sortable?: SortKey }[] = [
+  { id: 'code', label: '编号', defaultWidth: 140, sortable: 'code' },
+  { id: 'title', label: '标题', defaultWidth: 280, sortable: 'title' },
+  { id: 'locale', label: '后缀', defaultWidth: 56 },
+  { id: 'status', label: '状态', defaultWidth: 64 },
+  { id: 'updated', label: '修改时间', defaultWidth: 150, sortable: 'updated_at' },
+  { id: 'actors', label: '演员', defaultWidth: 160, sortable: 'actors' },
+  { id: 'scraped', label: '刮削', defaultWidth: 72, sortable: 'scraped_at' },
+];
+
+const WIDTHS_KEY = 'mfl:filmTable.colWidths';
+const VISIBLE_KEY = 'mfl:filmTable.colVisible';
+
+function loadWidths(): Partial<Record<FilmTableColumnId, number>> {
+  try {
+    const raw = localStorage.getItem(WIDTHS_KEY);
+    if (!raw) return {};
+    const o = JSON.parse(raw) as Record<string, number>;
+    const out: Partial<Record<FilmTableColumnId, number>> = {};
+    for (const d of COLUMN_DEFS) {
+      if (typeof o[d.id] === 'number' && o[d.id] >= 40) out[d.id] = o[d.id];
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function loadVisible(): Record<FilmTableColumnId, boolean> {
+  const defaults: Record<FilmTableColumnId, boolean> = {
+    code: true, title: true, locale: true, status: true, updated: true, actors: true, scraped: true,
+  };
+  try {
+    const raw = localStorage.getItem(VISIBLE_KEY);
+    if (!raw) return defaults;
+    const o = JSON.parse(raw) as Record<string, boolean>;
+    for (const d of COLUMN_DEFS) {
+      if (typeof o[d.id] === 'boolean') defaults[d.id] = o[d.id];
+    }
+    // 至少保留编号+标题
+    if (!defaults.code) defaults.code = true;
+    if (!defaults.title) defaults.title = true;
+    return defaults;
+  } catch {
+    return defaults;
+  }
+}
 
 export interface FilmTableSortProps {
   sortKey?: SortKey | null;
@@ -15,7 +66,6 @@ export interface FilmTableSortProps {
 }
 
 export interface FilmTableSelectProps {
-  /** 受控多选：传入时显示勾选列。 */
   selectedIds?: Set<number>;
   onSelectionChange?: (ids: Set<number>) => void;
 }
@@ -32,12 +82,51 @@ export default function FilmTable({
 }: {
   rows: FilmRow[];
   onRowDoubleClick?: (film: FilmRow) => void;
-  /** 演员页内列表不需要再显示演员列 */
   hideActorsColumn?: boolean;
 } & FilmTableSortProps & FilmTableSelectProps) {
   const nav = useNavigate();
+  const privacy = usePrivacySettings();
+  const blurText = textPrivacyActive(privacy);
   const [menu, setMenu] = useState<{ film: FilmRow; x: number; y: number } | null>(null);
   const selectable = !!onSelectionChange;
+
+  const [widths, setWidths] = useState(loadWidths);
+  const [visible, setVisible] = useState(loadVisible);
+  const [colMenuOpen, setColMenuOpen] = useState(false);
+  const colMenuRef = useRef<HTMLDivElement | null>(null);
+  const dragging = useRef<{ id: FilmTableColumnId; startX: number; startW: number } | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem(WIDTHS_KEY, JSON.stringify(widths));
+  }, [widths]);
+  useEffect(() => {
+    localStorage.setItem(VISIBLE_KEY, JSON.stringify(visible));
+  }, [visible]);
+
+  useEffect(() => {
+    if (!colMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (colMenuRef.current && !colMenuRef.current.contains(e.target as Node)) setColMenuOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [colMenuOpen]);
+
+  useLayoutEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = dragging.current;
+      if (!d) return;
+      const next = Math.max(48, d.startW + (e.clientX - d.startX));
+      setWidths(w => ({ ...w, [d.id]: next }));
+    };
+    const onUp = () => { dragging.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
 
   const onContext = (e: React.MouseEvent, film: FilmRow) => {
     e.preventDefault();
@@ -80,9 +169,122 @@ export default function FilmTable({
     onSelectionChange(next);
   };
 
+  const activeCols = useMemo(() => {
+    return COLUMN_DEFS.filter(c => {
+      if (c.id === 'actors' && hideActorsColumn) return false;
+      return visible[c.id] !== false;
+    });
+  }, [visible, hideActorsColumn]);
+
+  const colWidth = (id: FilmTableColumnId, fallback: number) => widths[id] ?? fallback;
+
+  const startResize = (e: ReactMouseEvent, id: FilmTableColumnId, defaultWidth: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging.current = {
+      id,
+      startX: e.clientX,
+      startW: colWidth(id, defaultWidth),
+    };
+  };
+
+  // 隐私文字：编号(code)永不模糊；其它列在 privacy_text 开启时模糊，按住查看。
+  const P = ({ children }: { children: React.ReactNode }) => (
+    <PrivacyText blur={blurText}>{children}</PrivacyText>
+  );
+
+  const renderCell = (r: FilmRow, id: FilmTableColumnId) => {
+    switch (id) {
+      case 'code':
+        return (
+          <>
+            {r.code ? r.code.toUpperCase() : ''}
+            {(r.code_count ?? 0) > 1 && (
+              <span title={`该编号存在 ${r.code_count} 份`} style={{ marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 11, background: '#7a3a00', color: '#ffd0a0', whiteSpace: 'nowrap' }}>×{r.code_count}</span>
+            )}
+          </>
+        );
+      case 'title': {
+        const t = r.title ?? '';
+        // 单行省略；完整标题放在内层 span 的 title（PrivacyText 不透传 title）
+        return (
+          <PrivacyText
+            blur={blurText}
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span title={t || undefined}>{t}</span>
+          </PrivacyText>
+        );
+      }
+      case 'locale':
+        return <P>{r.locale ?? ''}</P>;
+      case 'status':
+        return <P>{STATUS_LABEL[r.scan_status] ?? r.scan_status}</P>;
+      case 'updated':
+        return <P>{new Date(r.updated_at).toLocaleString()}</P>;
+      case 'actors': {
+        const names = (r.actors_names ?? '').trim() || '—';
+        // 单行省略；完整演员名放在内层 span 的 title
+        return (
+          <PrivacyText
+            blur={blurText}
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span title={names !== '—' ? names : undefined}>{names}</span>
+          </PrivacyText>
+        );
+      }
+      case 'scraped':
+        return r.scraped_at
+          ? <P><span title={new Date(r.scraped_at).toLocaleString()} style={{ color: '#8f8', whiteSpace: 'nowrap' }}>已刮削</span></P>
+          : <P><span style={{ color: '#666', whiteSpace: 'nowrap' }}>—</span></P>;
+      default:
+        return null;
+    }
+  };
+
   return (
     <>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4, position: 'relative' }} ref={colMenuRef}>
+        <button
+          type="button"
+          onClick={() => setColMenuOpen(o => !o)}
+          style={{ fontSize: 12, padding: '2px 8px', background: '#2a2a2a', color: '#ccc', border: '1px solid #444', borderRadius: 4, cursor: 'pointer' }}
+        >
+          显示列 ▾
+        </button>
+        {colMenuOpen && (
+          <div style={{
+            position: 'absolute', right: 0, top: '100%', zIndex: 50, marginTop: 4,
+            background: '#2a2a2a', border: '1px solid #444', borderRadius: 4, padding: 8,
+            minWidth: 140, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          }}>
+            {COLUMN_DEFS.filter(c => !(c.id === 'actors' && hideActorsColumn)).map(c => (
+              <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 12, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={visible[c.id] !== false}
+                  disabled={c.id === 'code' || c.id === 'title'}
+                  onChange={e => setVisible(v => ({ ...v, [c.id]: e.target.checked }))}
+                />
+                {c.label}
+              </label>
+            ))}
+            <div style={{ color: '#666', fontSize: 11, marginTop: 6 }}>拖拽表头右缘调列宽，自动保存</div>
+          </div>
+        )}
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, tableLayout: 'fixed' }}>
         <thead>
           <tr style={{ textAlign: 'left', borderBottom: '1px solid #333' }}>
             {selectable && (
@@ -98,11 +300,34 @@ export default function FilmTable({
                 />
               </th>
             )}
-            <th onClick={() => onSortClick('code')} style={{ cursor: onSortChange ? 'pointer' : 'default' }}>编号{arrow('code')}</th>
-            <th>标题</th><th>后缀</th><th>状态</th><th>修改时间</th>
-            {!hideActorsColumn && (
-              <th onClick={() => onSortClick('actors')} style={{ cursor: onSortChange ? 'pointer' : 'default' }} title="未挂演员信息的影片排在最前">演员{arrow('actors')}</th>
-            )}
+            {activeCols.map(c => (
+              <th
+                key={c.id}
+                onClick={() => c.sortable && onSortClick(c.sortable)}
+                style={{
+                  width: colWidth(c.id, c.defaultWidth),
+                  position: 'relative',
+                  cursor: c.sortable && onSortChange ? 'pointer' : 'default',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  userSelect: 'none',
+                  paddingRight: 8,
+                }}
+                title={c.id === 'actors' ? '未挂演员信息的影片排在最前' : undefined}
+              >
+                {c.label}{c.sortable ? arrow(c.sortable) : ''}
+                <span
+                  onMouseDown={e => startResize(e, c.id, c.defaultWidth)}
+                  onClick={e => e.stopPropagation()}
+                  style={{
+                    position: 'absolute', right: 0, top: 0, bottom: 0, width: 6,
+                    cursor: 'col-resize', userSelect: 'none',
+                  }}
+                  title="拖拽调整列宽"
+                />
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -124,19 +349,22 @@ export default function FilmTable({
                     <input type="checkbox" checked={checked} onChange={() => toggleOne(r.id)} />
                   </td>
                 )}
-                <td>
-                  {r.code ? r.code.toUpperCase() : ''}
-                  {(r.code_count ?? 0) > 1 && (
-                    <span title={`该编号存在 ${r.code_count} 份`} style={{ marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 11, background: '#7a3a00', color: '#ffd0a0' }}>×{r.code_count}</span>
-                  )}
-                </td>
-                <td>{r.title ?? ''}</td>
-                <td>{r.locale ?? ''}</td>
-                <td>{STATUS_LABEL[r.scan_status] ?? r.scan_status}</td>
-                <td>{new Date(r.updated_at).toLocaleString()}</td>
-                {!hideActorsColumn && (
-                  <td>{(r.actors_names ?? '').trim() || '—'}</td>
-                )}
+                {activeCols.map(c => (
+                  <td
+                    key={c.id}
+                    style={{
+                      width: colWidth(c.id, c.defaultWidth),
+                      // 标题/演员等统一单行省略
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      verticalAlign: 'middle',
+                      maxWidth: 0, // 配合 table-layout:fixed，强制列宽内省略
+                    }}
+                  >
+                    {renderCell(r, c.id)}
+                  </td>
+                ))}
               </tr>
             );
           })}

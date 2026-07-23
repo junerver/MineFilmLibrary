@@ -3,6 +3,12 @@ import { getDb } from '../db';
 import { nowMs } from '../db/dao';
 import { runScan } from '../scanner';
 import type { ScanProgress } from '../scanner';
+import { enrichAddedFilms } from '../scanner/enrich';
+import { DEFAULT_SCAN_MAX_DEPTH, MAX_SCAN_MAX_DEPTH, MIN_SCAN_MAX_DEPTH } from '../scanner/walker';
+import { scrapeOneFilm } from './scrape';
+import * as log from '../util/logger';
+
+const TAG = 'scanner';
 
 export function registerScannerIpc(progressKey = 'scanner:progress') {
   ipcMain.handle('scanner:listRoots', () => getDb().prepare('SELECT * FROM scan_roots ORDER BY id').all());
@@ -28,6 +34,11 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
 
     const settingsRow = getDb().prepare("SELECT value FROM settings WHERE key='default_parent_type'").get() as { value: string } | undefined;
     const defaultType = settingsRow?.value === 'genre' ? 'genre' : 'actor';
+    const depthRow = getDb().prepare("SELECT value FROM settings WHERE key='scan_max_depth'").get() as { value: string } | undefined;
+    const rawDepth = Number(depthRow?.value);
+    const maxDepth = Number.isFinite(rawDepth)
+      ? Math.max(MIN_SCAN_MAX_DEPTH, Math.min(MAX_SCAN_MAX_DEPTH, Math.floor(rawDepth)))
+      : DEFAULT_SCAN_MAX_DEPTH;
 
     let errorMessage: string | null = null;
     try {
@@ -36,7 +47,20 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
           w.webContents.send(progressKey, { runId, ...p });
         }
       };
-      const stats = runScan(getDb(), { mode, rootPath: root.path, defaultType: defaultType as 'actor' | 'genre', onProgress });
+      const scanResult = runScan(getDb(), {
+        mode,
+        rootPath: root.path,
+        defaultType: defaultType as 'actor' | 'genre',
+        maxDepth,
+        onProgress,
+      });
+      const { addedFilms, ...scanStats } = scanResult;
+      const enrichment = await enrichAddedFilms(getDb(), addedFilms, scrapeOneFilm, p => {
+        const currentPath = p.film.absPath;
+        onProgress({ stage: p.stage, current: p.current, total: p.total, currentPath });
+        if (p.error) log.warn(TAG, `film#${p.film.filmId} scrape failed, applying fallback`, p.error);
+      });
+      const stats = { ...scanStats, ...enrichment };
       const finished = nowMs();
       if (mode === 'full') getDb().prepare('UPDATE scan_roots SET last_full_scan_at=? WHERE id=?').run(finished, rootId);
       else getDb().prepare('UPDATE scan_roots SET last_incremental_scan_at=? WHERE id=?').run(finished, rootId);

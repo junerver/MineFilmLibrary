@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import path from 'node:path';
 import { nowMs, tx } from './dao';
 
 /**
@@ -141,8 +142,16 @@ export function mergeActors(db: Database.Database, fromId: number, toId: number)
 export function recomputeCodeCounts(db: Database.Database): void {
   db.exec(`UPDATE films SET code_count = (
     SELECT COUNT(*) FROM films f2
-    WHERE f2.code = films.code AND f2.is_deleted = 0 AND f2.code IS NOT NULL
+    WHERE f2.code = films.code COLLATE NOCASE
+      AND f2.is_deleted = 0
+      AND f2.code IS NOT NULL
   )`);
+}
+
+/** 全库（包含回收站）是否已经存在同编号影片。编号按大小写不敏感比较。 */
+export function filmCodeExists(db: Database.Database, code: string | null): boolean {
+  if (!code) return false;
+  return db.prepare('SELECT 1 FROM films WHERE code = ? COLLATE NOCASE LIMIT 1').get(code) != null;
 }
 
 export function upsertGenreByName(db: Database.Database, name: string): number {
@@ -183,8 +192,20 @@ export function listActorsOfFilm(db: Database.Database, filmId: number): number[
   return rows.map(r => r.actor_id);
 }
 
-export function listAllFilmPaths(db: Database.Database, rootLike: string): { id: number; abs_path: string; fs_mtime_ms: number }[] {
-  const rows = db.prepare("SELECT id, abs_path, fs_mtime_ms FROM films WHERE abs_path LIKE ? AND is_deleted=0").all(`${rootLike}%`) as any[];
+export function listAllFilmPaths(db: Database.Database, rootLike: string): { id: number; abs_path: string; fs_mtime_ms: number; is_deleted: number }[] {
+  // 只匹配根目录本身及其真正的子路径。单纯使用 `${rootLike}%` 会把
+  // `D:\\media\\other` 的兄弟目录 `D:\\media\\other精品` 也纳入基线，
+  // 随后在扫描 `other` 时被误判为缺失并软删除。
+  const root = path.resolve(rootLike);
+  const separator = path.sep;
+  const descendantPrefix = root.endsWith(separator) ? root : `${root}${separator}`;
+  // 使用独立的 ESCAPE 字符，避免根路径中的 `%` / `_` 被当成 LIKE 通配符。
+  const escapeLike = (value: string) => value.replace(/[!%_]/g, ch => `!${ch}`);
+  const rows = db.prepare(`
+    SELECT id, abs_path, fs_mtime_ms, is_deleted
+    FROM films
+    WHERE abs_path = ? COLLATE NOCASE OR abs_path LIKE ? ESCAPE '!'
+  `).all(root, `${escapeLike(descendantPrefix)}%`) as any[];
   return rows;
 }
 

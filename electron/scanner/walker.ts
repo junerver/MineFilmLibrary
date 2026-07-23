@@ -3,7 +3,10 @@ import path from 'node:path';
 
 const VIDEO_EXT = new Set(['.mp4', '.mkv', '.avi', '.wmv', '.mov', '.m4v', '.iso', '.rmvb', '.ts']);
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
-const MAX_DEPTH = 3;
+const FILE_MAX_DEPTH = 3;
+export const DEFAULT_SCAN_MAX_DEPTH = 3;
+export const MIN_SCAN_MAX_DEPTH = 1;
+export const MAX_SCAN_MAX_DEPTH = 10;
 
 export interface FilmFileStat {
   rel_path: string;
@@ -33,7 +36,7 @@ export function listFilmFiles(filmDir: string): FilmFileStat[] {
     for (const e of entries) {
       const abs = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (depth < MAX_DEPTH) recurse(abs, depth + 1);
+        if (depth < FILE_MAX_DEPTH) recurse(abs, depth + 1);
       } else if (e.isFile()) {
         const ext = path.extname(e.name).toLowerCase();
         const st = fs.statSync(abs);
@@ -64,80 +67,71 @@ function looksLikeFilmDir(name: string): boolean {
   return /^[A-Za-z]+[-_]?[0-9]+/.test(txt) || /\[[^\]]+\]/.test(txt);
 }
 
-// 平铺根专用更宽松的启发：root 下若没有任何编号/标签目录穿插，
-// 则把所有"显然不是 演员/题材 父目录"的子目录直接当影片处理。
-// 用于 `F:\Movie\已处理\其他精品` 这种 root → films 一级结构。
-// 注意：纯靠"长度≥N"会把 groupA 这种容器目录误判成影片，所以这里要求
-// 目录名要么有编号/标签，要么含中文/假名（电影标题特征），否则不认。
-function looksLikeFilmDirFlat(name: string): boolean {
-  const txt = name.trim();
-  if (!txt) return false;
-  // 已是编号/标签形式的，直接认。
-  if (looksLikeFilmDir(txt)) return true;
-  // 演员/题材父目录（0-/1- 前缀）不当作影片——避免误吞。
-  if (looksLikeActorOrGenre(txt)) return false;
-  // 含中文/假名的目录名几乎肯定是影片标题（演员/题材目录通常用拉丁字母）。
-  if (/[\u4e00-\u9fff\u3040-\u30ff]/.test(txt)) return txt.length >= 4;
-  // 不含中文又不带编号/标签的，不认——避免把 groupA、Backup 这类容器目录当影片。
-  return false;
+function clampScanDepth(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_SCAN_MAX_DEPTH;
+  return Math.max(MIN_SCAN_MAX_DEPTH, Math.min(MAX_SCAN_MAX_DEPTH, Math.floor(value!)));
 }
 
-export function* walkFilmDirs(root: string): Iterable<FilmDirVisit> {
-  let firstLevel: fs.Dirent[];
-  try { firstLevel = fs.readdirSync(root, { withFileTypes: true }); }
+function resolveFilmParent(root: string, ancestors: string[]): { name: string; absPath: string } {
+  if (ancestors.length === 0) return { name: '', absPath: root };
+  let index = -1;
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    if (looksLikeActorOrGenre(ancestors[i])) {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) index = ancestors.length - 1;
+  return {
+    name: ancestors[index],
+    absPath: path.join(root, ...ancestors.slice(0, index + 1)),
+  };
+}
+
+/**
+ * 在 root 以下递归发现影片目录。maxDepth 表示影片目录相对 root 的最大层级：
+ * root/film 为 1，root/group/film 为 2。命中影片目录后不再向内递归。
+ */
+export function* walkFilmDirs(root: string, maxDepth = DEFAULT_SCAN_MAX_DEPTH): Iterable<FilmDirVisit> {
+  const depthLimit = clampScanDepth(maxDepth);
+  let rootEntries: fs.Dirent[];
+  try { rootEntries = fs.readdirSync(root, { withFileTypes: true }); }
   catch { return; }
+  const rootDirs = rootEntries.filter(e => e.isDirectory());
+  // 保留既有混合根语义：根下存在 0-/1- 父目录时，不把并列的编号目录误吞为平铺影片。
+  const suppressDirectFilms = rootDirs.some(d => looksLikeActorOrGenre(d.name));
 
-  const dirsAtRoot = firstLevel.filter(e => e.isDirectory());
-
-  // —— 平铺根快车道 ——
-  // 如果 root 的直接子目录里没有任何"演员/题材"父目录（0-/1- 前缀），
-  // 且有 ≥1 个目录通过宽松启发认定为影片目录，则走平铺模式：
-  // root 直接是影片的容器，parent 落空，所有影片挂 parent_dir_name=''。
-  const hasActorOrGenreParent = dirsAtRoot.some(d => looksLikeActorOrGenre(d.name));
-  if (!hasActorOrGenreParent) {
-    const flatHits = dirsAtRoot.filter(d => looksLikeFilmDirFlat(d.name));
-    if (flatHits.length >= 1) {
-      for (const s of flatHits) {
-        const abs = path.join(root, s.name);
-        yield { parentDirName: '', filmDirName: s.name, filmAbsPath: abs, parentAbsPath: root, mtime_ms: dirMtime(abs) };
-      }
-      return;
+  function* recurse(dir: string, depth: number, ancestors: string[], entries?: fs.Dirent[]): Iterable<FilmDirVisit> {
+    let children = entries;
+    if (!children) {
+      try { children = fs.readdirSync(dir, { withFileTypes: true }); }
+      catch { return; }
     }
-  }
-
-  for (const parent of dirsAtRoot) {
-    const parentAbs = path.join(root, parent.name);
-
-    let subs: fs.Dirent[];
-    try { subs = fs.readdirSync(parentAbs, { withFileTypes: true }); }
-    catch { continue; }
-
-    const filmSubs = subs.filter(s => s.isDirectory() && looksLikeFilmDir(s.name));
-    if (filmSubs.length > 0) {
-      for (const s of filmSubs) {
-        const abs = path.join(parentAbs, s.name);
-        yield { parentDirName: parent.name, filmDirName: s.name, filmAbsPath: abs, parentAbsPath: parentAbs, mtime_ms: dirMtime(abs) };
-      }
-      continue;
-    }
-
-    // fallback: parent 层不像 actor/genre，再下一层
-    if (!looksLikeActorOrGenre(parent.name)) {
-      for (const inner of subs) {
-        if (!inner.isDirectory()) continue;
-        const innerAbs = path.join(parentAbs, inner.name);
-        let innerSubs: fs.Dirent[];
-        try { innerSubs = fs.readdirSync(innerAbs, { withFileTypes: true }); }
-        catch { continue; }
-        for (const s of innerSubs) {
-          if (s.isDirectory() && looksLikeFilmDir(s.name)) {
-            const abs = path.join(innerAbs, s.name);
-            yield { parentDirName: inner.name, filmDirName: s.name, filmAbsPath: abs, parentAbsPath: innerAbs, mtime_ms: dirMtime(abs) };
-          }
+    for (const child of children) {
+      if (!child.isDirectory()) continue;
+      const childDepth = depth + 1;
+      const childAbs = path.join(dir, child.name);
+      const isDirectSuppressed = childDepth === 1 && suppressDirectFilms;
+      if (looksLikeFilmDir(child.name)) {
+        if (!isDirectSuppressed) {
+          const parent = resolveFilmParent(root, ancestors);
+          yield {
+            parentDirName: parent.name,
+            filmDirName: child.name,
+            filmAbsPath: childAbs,
+            parentAbsPath: parent.absPath,
+            mtime_ms: dirMtime(childAbs),
+          };
         }
+        continue;
+      }
+      if (childDepth < depthLimit) {
+        yield* recurse(childAbs, childDepth, [...ancestors, child.name]);
       }
     }
   }
+
+  yield* recurse(root, 0, [], rootEntries);
 }
 
 function dirMtime(p: string): number {

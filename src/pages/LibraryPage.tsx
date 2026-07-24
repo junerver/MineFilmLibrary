@@ -51,6 +51,7 @@ function filterFromParams(sp: URLSearchParams): FilmFilter {
     tags: parseStrList(sp.get('tags')),
     locales: parseStrList(sp.get('locales')),
     statuses: parseStrList(sp.get('statuses')) as FilmFilter['statuses'],
+    duplicate_codes_only: sp.get('duplicates') === '1' || undefined,
   };
 }
 
@@ -66,6 +67,7 @@ function paramsFromFilter(f: FilmFilter): URLSearchParams {
   if (f.tags?.length) next.set('tags', f.tags.join(','));
   if (f.locales?.length) next.set('locales', f.locales.join(','));
   if (f.statuses?.length) next.set('statuses', f.statuses.join(','));
+  if (f.duplicate_codes_only) next.set('duplicates', '1');
   return next;
 }
 
@@ -110,7 +112,8 @@ export default function LibraryPage() {
     const prev = filter;
     const changed = f.q !== prev.q || f.actors !== prev.actors || f.genres !== prev.genres
       || f.tags !== prev.tags || f.locales !== prev.locales || f.statuses !== prev.statuses
-      || f.include_deleted !== prev.include_deleted || f.sort_by !== prev.sort_by || f.sort_dir !== prev.sort_dir;
+      || f.include_deleted !== prev.include_deleted || f.duplicate_codes_only !== prev.duplicate_codes_only
+      || f.sort_by !== prev.sort_by || f.sort_dir !== prev.sort_dir;
     const next: FilmFilter = changed ? { ...f, page: 1, page_size: PAGE_SIZE } : { ...f, page_size: PAGE_SIZE };
     setSearchParams(paramsFromFilter(next), { replace: true });
     // 筛选/排序变化清空勾选，避免用户以为还在刮「当前可见」的一批。
@@ -119,8 +122,13 @@ export default function LibraryPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const api = mfl();
+    if (!api?.library?.list) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    mfl().library.list({ ...filter, page_size: PAGE_SIZE }).then(r => {
+    api.library.list({ ...filter, page_size: PAGE_SIZE }).then(r => {
       if (!cancelled) { setRows(r.items); setTotal(r.total); }
     }).catch(e => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' })).finally(() => {
       if (!cancelled) setLoading(false);
@@ -271,6 +279,14 @@ export default function LibraryPage() {
     <div>
       <FilterBar value={{ ...filter, page_size: PAGE_SIZE }} onChange={setFilter} />
       <div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          aria-pressed={!!filter.duplicate_codes_only}
+          title="只显示当前库中编号重复的影片"
+          onClick={() => setFilter({ ...filter, duplicate_codes_only: !filter.duplicate_codes_only })}
+          style={filter.duplicate_codes_only ? { background: '#3a5a8a', color: '#fff' } : undefined}
+        >重复编号</button>
+        <span style={{ width: 1, height: 16, background: '#444' }} />
         <button onClick={() => mfl().export.csv({ include_deleted: false }).then(r => r.ok && toast.push({ text: '已导出 CSV', kind: 'success' }))}>导出 CSV</button>
         <button onClick={() => mfl().export.json({ include_deleted: false }).then(r => r.ok && toast.push({ text: '已导出 JSON', kind: 'success' }))}>导出 JSON</button>
         <span style={{ width: 1, height: 16, background: '#444' }} />

@@ -41,11 +41,27 @@ describe('LibraryPage', () => {
   it('typing in keyword triggers list call', async () => {
     render(<MemoryRouter><LibraryPage /></MemoryRouter>);
     const input = await screen.findByPlaceholderText('搜索 编号/标题/演员');
+    // FilterBar 对 q 做本地草稿 + 防抖；失焦立即提交，避免单测等 timer
     fireEvent.change(input, { target: { value: 'CJOD' } });
-    await waitFor(() => expect(fakeApi.library.list).toHaveBeenCalled());
-    const calls = fakeApi.library.list.mock.calls as [FilmFilter][];
-    const lastCall = calls[calls.length - 1]?.[0];
-    expect(lastCall?.q).toBe('CJOD');
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const calls = fakeApi.library.list.mock.calls as [FilmFilter][];
+      const hit = calls.some(c => c[0]?.q === 'CJOD');
+      expect(hit).toBe(true);
+    });
+  });
+
+  it('filters duplicate codes and preserves the state in the URL filter', async () => {
+    render(<MemoryRouter><LibraryPage /></MemoryRouter>);
+    const button = await screen.findByRole('button', { name: '重复编号' });
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      const calls = fakeApi.library.list.mock.calls as [FilmFilter][];
+      expect(calls.some(([filter]) => filter.duplicate_codes_only === true)).toBe(true);
+    });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('restores list scroll after the table becomes scrollable', async () => {

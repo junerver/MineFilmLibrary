@@ -79,6 +79,7 @@ export interface FilmFilter {
   statuses?: ScanStatus[];
   root_ids?: number[];
   include_deleted?: boolean;
+  duplicate_codes_only?: boolean;
   page?: number;
   page_size?: number;
   sort_by?: 'code' | 'title' | 'updated_at' | 'fs_mtime_ms' | 'actors' | 'scraped_at';

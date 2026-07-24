@@ -30,6 +30,7 @@ export function registerLibraryIpc() {
     const where: string[] = [];
     const args: any[] = [];
     if (!filter.include_deleted) where.push('is_deleted=0');
+    if (filter.duplicate_codes_only) where.push('code_count > 1');
     if (filter.q) {
       where.push('(code LIKE ? OR title LIKE ?)');
       const q = `%${filter.q}%`;

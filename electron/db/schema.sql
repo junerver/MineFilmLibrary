@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS actors (
   hips TEXT,
   measurements TEXT,
   hobby TEXT,
+  is_favorite INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

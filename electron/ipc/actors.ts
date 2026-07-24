@@ -12,11 +12,11 @@ export function registerActorIpc() {
       SELECT a.id, a.name, a.raw_dir_name, a.category, a.notes,
         a.birthday, a.age, a.height, a.cup, a.bust, a.waist, a.hips, a.measurements, a.hobby,
         a.javbus_url, NULL AS javbus_data_json, a.javbus_scraped_at,
-        a.created_at, a.updated_at, COUNT(fa.film_id) film_count
+        a.is_favorite, a.created_at, a.updated_at, COUNT(fa.film_id) film_count
       FROM actors a
       LEFT JOIN film_actors fa ON fa.actor_id=a.id
       GROUP BY a.id
-      ORDER BY a.name
+      ORDER BY a.is_favorite DESC, a.name ASC
     `).all() as ActorRow[];
     // 一次群查所有别名，按 actor_id 在 JS 端聚合，避免 N+1。
     const allAliases = db.prepare('SELECT alias, actor_id FROM actor_aliases').all() as { alias: string; actor_id: number }[];
@@ -69,6 +69,14 @@ export function registerActorIpc() {
   ipcMain.handle('actors:delete', (_e, id: number) => {
     getDb().prepare('DELETE FROM actors WHERE id=?').run(id);
     return true;
+  });
+
+  // 切换收藏星标。favorite 为真 → 1，假 → 0。
+  ipcMain.handle('actors:setFavorite', (_e, id: number, favorite: boolean) => {
+    const flag = favorite ? 1 : 0;
+    const info = getDb().prepare('UPDATE actors SET is_favorite=?, updated_at=? WHERE id=?')
+      .run(flag, nowMs(), id);
+    return info.changes > 0;
   });
   ipcMain.handle('actors:films', (_e, actorId: number) => {
     return getDb().prepare(`SELECT f.* FROM films f JOIN film_actors fa ON fa.film_id=f.id WHERE fa.actor_id=? AND f.is_deleted=0`).all(actorId);

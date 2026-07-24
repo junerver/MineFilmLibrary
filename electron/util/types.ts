@@ -46,6 +46,8 @@ export interface ActorRow {
   javbus_url: string | null;
   javbus_data_json: string | null;
   javbus_scraped_at: number | null;
+  /** 1 = 收藏置顶，0 = 普通 */
+  is_favorite: number;
   created_at: number;
   updated_at: number;
   aliases?: string[];

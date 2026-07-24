@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('mfl', {
     create: (name: string, raw?: string, cat?: string, notes?: string) => invoke('actors:create', name, raw, cat, notes),
     update: (id: number, patch: any) => invoke('actors:update', id, patch),
     delete: (id: number) => invoke('actors:delete', id),
+    setFavorite: (id: number, favorite: boolean) => invoke('actors:setFavorite', id, favorite),
     films: (id: number) => invoke('actors:films', id),
     getJavbusData: (id: number) => invoke('actors:getJavbusData', id),
     scrapeJavbus: (id: number) => invoke('actors:scrapeJavbus', id),

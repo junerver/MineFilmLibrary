@@ -311,4 +311,19 @@ describe('runScan full mode', () => {
     expect((db.prepare('SELECT COUNT(*) n FROM film_actors WHERE actor_id=?').get(jId) as any).n).toBe(2);
     expect((db.prepare('SELECT COUNT(*) n FROM film_actors WHERE actor_id=?').get(mId) as any).n).toBe(0);
   });
+
+  it('mergeActors preserves favorite if either side is favorited', () => {
+    mkdir('0-J/CODE-1 T');
+    touch('0-J/CODE-1 T/a.mp4');
+    mkdir('0-M/CODE-2 T');
+    touch('0-M/CODE-2 T/a.mp4');
+    const result = runScan(db, { mode: 'full', rootPath, defaultType: 'actor' });
+    for (const film of result.addedFilms) expect(applyScanFallback(db, film)).toBe(true);
+    const jId = (db.prepare('SELECT id FROM actors WHERE name=?').get('J') as any).id;
+    const mId = (db.prepare('SELECT id FROM actors WHERE name=?').get('M') as any).id;
+    db.prepare('UPDATE actors SET is_favorite=1 WHERE id=?').run(mId);
+    mergeActors(db, mId, jId);
+    const j = db.prepare('SELECT is_favorite FROM actors WHERE id=?').get(jId) as { is_favorite: number };
+    expect(j.is_favorite).toBe(1);
+  });
 });

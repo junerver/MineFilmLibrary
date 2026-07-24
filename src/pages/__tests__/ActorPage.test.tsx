@@ -22,6 +22,7 @@ const actor: ActorRow = {
   javbus_url: 'https://www.javbus.com/star/okq',
   javbus_data_json: null,
   javbus_scraped_at: 1,
+  is_favorite: 0,
   film_count: 1,
   aliases: [],
   created_at: 1,
@@ -75,16 +76,24 @@ const javbusData: ActorJavbusData = {
 };
 
 const openExternal = vi.fn(async () => true);
+const setFavorite = vi.fn(async (_id: number, _favorite: boolean) => true);
+let listActors: ActorRow[] = [actor];
 
 beforeEach(() => {
   openExternal.mockClear();
+  setFavorite.mockClear();
+  listActors = [{ ...actor, is_favorite: 0 }];
   (window as any).mfl = {
     actors: {
-      list: vi.fn(async () => [actor]),
+      list: vi.fn(async () => listActors),
       films: vi.fn(async () => [localFilm]),
       getJavbusData: vi.fn(async () => javbusData),
       scrapeJavbus: vi.fn(async () => ({ ...javbusData, scrapedAt: 2 })),
       openExternal,
+      setFavorite: vi.fn(async (id: number, favorite: boolean) => {
+        listActors = listActors.map(a => a.id === id ? { ...a, is_favorite: favorite ? 1 : 0 } : a);
+        return setFavorite(id, favorite);
+      }),
       update: vi.fn(async () => true),
       addAlias: vi.fn(async () => true),
       removeAlias: vi.fn(async () => true),
@@ -120,5 +129,18 @@ describe('ActorPage', () => {
     expect(screen.getByText('东京')).toBeInTheDocument();
     const summary = screen.getByText('合并到其他演员');
     expect(summary.closest('details')).not.toHaveAttribute('open');
+  });
+
+  it('toggles favorite star and shows list marker', async () => {
+    render(<MemoryRouter><ActorPage /></MemoryRouter>);
+    fireEvent.click(await screen.findByText('本地演员'));
+    const starBtn = await screen.findByRole('button', { name: '收藏' });
+    expect(starBtn).toHaveTextContent('☆ 收藏');
+    fireEvent.click(starBtn);
+    await waitFor(() => expect(setFavorite).toHaveBeenCalledWith(7, true));
+    expect(await screen.findByRole('button', { name: '取消收藏' })).toHaveTextContent('★ 已收藏');
+    // 左侧列表收藏标记
+    const listItem = document.querySelector('[data-actor-id="7"]');
+    expect(listItem?.textContent).toContain('★');
   });
 });

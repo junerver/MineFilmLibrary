@@ -231,6 +231,19 @@ export default function ActorPage() {
     : actors;
 
   const selectedActor = actors.find(a => a.id === selected) ?? null;
+
+  const toggleFavorite = async () => {
+    if (selected == null || !selectedActor) return;
+    const next = !(selectedActor.is_favorite === 1);
+    try {
+      await mfl().actors.setFavorite(selected, next);
+      // 重新拉列表以应用 is_favorite DESC, name ASC 排序
+      reloadActors();
+    } catch (e: any) {
+      toast.push({ text: `收藏失败：${e?.message ?? e}`, kind: 'error' });
+    }
+  };
+
   const scrapedProfileName = actorJavbusData?.profile?.name?.trim() || null;
   const extraProfileFields = (actorJavbusData?.profile?.fields ?? []).filter(field =>
     !KNOWN_PROFILE_LABELS.has(normalizeProfileLabel(field.label)),
@@ -457,22 +470,20 @@ export default function ActorPage() {
         >
           <input
             type="text"
+            autoComplete="off"
+            spellCheck={false}
             value={actorSearch}
             onChange={e => setActorSearch(e.target.value)}
             placeholder="搜索 名称/别名"
-            // 点击后若未聚焦则主动 focus（Electron 偶发点不中）
+            // 点击后若未聚焦则主动 focus（Electron 偶发点不中）；不 preventDefault
             onMouseDown={e => {
               e.stopPropagation();
               const el = e.currentTarget;
-              // 不 preventDefault，保留浏览器默认选区/光标行为
               if (document.activeElement !== el) {
-                el.focus({ preventScroll: true });
-              }
-            }}
-            onClick={e => {
-              const el = e.currentTarget;
-              if (document.activeElement !== el) {
-                el.focus({ preventScroll: true });
+                // 下一帧 focus，避开同一次 mousedown 里其它 setState（如表头菜单关闭）抢焦点
+                requestAnimationFrame(() => {
+                  if (document.activeElement !== el) el.focus({ preventScroll: true });
+                });
               }
             }}
             style={{
@@ -502,6 +513,9 @@ export default function ActorPage() {
                 background: selected === a.id ? '#2a2a2a' : 'transparent',
               }}
             >
+              {a.is_favorite === 1 && (
+                <span style={{ color: '#e6b800', marginRight: 4 }} title="已收藏">★</span>
+              )}
               {a.name} <span style={{ color: '#888', fontSize: 12 }}>({a.film_count})</span>
               {a.aliases && a.aliases.length > 0 && <span style={{ color: '#666', fontSize: 11 }}> +{a.aliases.length}别名</span>}
             </div>
@@ -515,6 +529,23 @@ export default function ActorPage() {
               <span style={{ color: '#aaa', fontSize: 12 }}>选中演员：</span>
               <strong>{selectedActor.name}</strong>
               {selectedActor.category && <span style={{ color: '#888', fontSize: 11 }}>[{selectedActor.category}]</span>}
+              <button
+                type="button"
+                onClick={() => void toggleFavorite()}
+                title={selectedActor.is_favorite === 1 ? '取消收藏' : '收藏并置顶'}
+                style={{
+                  marginLeft: 4,
+                  padding: '2px 8px',
+                  border: '1px solid #555',
+                  borderRadius: 4,
+                  background: selectedActor.is_favorite === 1 ? '#3a3200' : '#2a2a2a',
+                  color: selectedActor.is_favorite === 1 ? '#e6b800' : '#aaa',
+                  cursor: 'pointer',
+                }}
+                aria-label={selectedActor.is_favorite === 1 ? '取消收藏' : '收藏'}
+              >
+                {selectedActor.is_favorite === 1 ? '★ 已收藏' : '☆ 收藏'}
+              </button>
               <button
                 type="button"
                 onClick={() => (metaEditing ? setMetaEditing(false) : openMetaEditor())}
@@ -547,6 +578,8 @@ export default function ActorPage() {
                   <span style={{ color: '#999' }}>名称</span>
                   <input
                     ref={metaNameInputRef}
+                    type="text"
+                    autoComplete="off"
                     value={metaForm.name}
                     onChange={e => setMetaForm(f => ({ ...f, name: e.target.value }))}
                     style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}

@@ -96,10 +96,10 @@ export function removeActorAlias(db: Database.Database, alias: string): boolean 
 export function mergeActors(db: Database.Database, fromId: number, toId: number): void {
   if (fromId === toId) return;
   tx(db, () => {
-    const from = db.prepare('SELECT id, name, raw_dir_name FROM actors WHERE id=?').get(fromId) as
-      { id: number; name: string; raw_dir_name: string | null } | undefined;
-    const to = db.prepare('SELECT id, name FROM actors WHERE id=?').get(toId) as
-      { id: number; name: string } | undefined;
+    const from = db.prepare('SELECT id, name, raw_dir_name, is_favorite FROM actors WHERE id=?').get(fromId) as
+      { id: number; name: string; raw_dir_name: string | null; is_favorite: number } | undefined;
+    const to = db.prepare('SELECT id, name, is_favorite FROM actors WHERE id=?').get(toId) as
+      { id: number; name: string; is_favorite: number } | undefined;
     if (!from || !to) throw new Error('演员不存在，无法合并');
 
     // 把 fromId 的影片搬到 toId；已存在的对儿忽略。
@@ -127,6 +127,12 @@ export function mergeActors(db: Database.Database, fromId: number, toId: number)
       }
       const info = moveAlias.run(a.alias, toId);
       if (info.changes > 0) db.prepare('DELETE FROM actor_aliases WHERE alias=? AND actor_id=?').run(a.alias, fromId);
+    }
+
+    // 任一收藏则目标保留收藏。
+    const fav = Math.max(from.is_favorite ? 1 : 0, to.is_favorite ? 1 : 0);
+    if (fav !== (to.is_favorite ? 1 : 0)) {
+      db.prepare('UPDATE actors SET is_favorite=?, updated_at=? WHERE id=?').run(fav, nowMs(), toId);
     }
 
     // 删除 from；残余 film_actors / actor_aliases 随 ON DELETE CASCADE 清理。

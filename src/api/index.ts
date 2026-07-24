@@ -21,6 +21,7 @@ export interface MflApi {
       'name' | 'category' | 'notes' | 'javbus_url' | 'birthday' | 'age' | 'height'
       | 'cup' | 'bust' | 'waist' | 'hips' | 'measurements' | 'hobby'>>): Promise<boolean>;
     delete(id: number): Promise<boolean>;
+    setFavorite(id: number, favorite: boolean): Promise<boolean>;
     films(id: number): Promise<T.FilmRow[]>;
     getJavbusData(id: number): Promise<T.ActorJavbusData | null>;
     scrapeJavbus(id: number): Promise<T.ActorJavbusData & { scrapedAt: number }>;

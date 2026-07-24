@@ -154,6 +154,9 @@ async function fetchRenderedText(url: string, timeoutMs = 30000): Promise<string
 
   const win = new electron.BrowserWindow({
     show: false,
+    // 禁止抢主窗口焦点；否则刮削挑战页路径下用户正在输入时会偶发失焦/无法继续填写
+    focusable: false,
+    skipTaskbar: true,
     webPreferences: {
       partition,
       contextIsolation: true,

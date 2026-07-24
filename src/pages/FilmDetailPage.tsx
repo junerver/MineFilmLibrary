@@ -488,8 +488,18 @@ export default function FilmDetailPage() {
                 <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 12 }}>
                   <span style={{ color: '#999' }}>{f.label}</span>
                   {f.multiline
-                    ? <textarea value={form[f.key] ?? ''} onChange={e => setForm({ ...form, [f.key]: e.target.value })} rows={3} style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }} />
-                    : <input value={form[f.key] ?? ''} onChange={e => setForm({ ...form, [f.key]: e.target.value })} style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }} />}
+                    ? <textarea
+                        value={form[f.key] ?? ''}
+                        onChange={e => setForm((prev: any) => ({ ...prev, [f.key]: e.target.value }))}
+                        rows={3}
+                        style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}
+                      />
+                    : <input
+                        type="text"
+                        value={form[f.key] ?? ''}
+                        onChange={e => setForm((prev: any) => ({ ...prev, [f.key]: e.target.value }))}
+                        style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}
+                      />}
                 </label>
               ))}
               {/* 演员编辑：自动补全输入 + 已选 tags。

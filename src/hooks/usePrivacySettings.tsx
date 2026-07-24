@@ -82,7 +82,9 @@ export function PrivacyText({
 
   const onDown = useCallback((e: PointerEvent<HTMLElement>) => {
     if (!blur) return;
-    e.preventDefault();
+    // 不 preventDefault：避免拦截后续 focus/选区；userSelect:none 已足够防拖选。
+    // 仅主指针按住时 capture，保证拖出元素仍能收到 pointerup。
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
     setHold(true);
     try {
       e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -93,9 +95,15 @@ export function PrivacyText({
     if (!blur) return;
     setHold(false);
     try {
-      e.currentTarget.releasePointerCapture?.(e.pointerId);
+      if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
+      }
     } catch { /* ignore */ }
   }, [blur]);
+
+  const onLostCapture = useCallback(() => {
+    setHold(false);
+  }, []);
 
   if (!blur) {
     return <Tag style={style}>{children}</Tag>;
@@ -106,7 +114,8 @@ export function PrivacyText({
       onPointerDown={onDown}
       onPointerUp={onUp}
       onPointerCancel={onUp}
-      onPointerLeave={onUp}
+      onLostPointerCapture={onLostCapture}
+      // 不在 leave 时 release：capture 期间 leave 是预期的；靠 pointerup/cancel/lostcapture 收尾
       title="按住查看，松开恢复模糊"
       style={{
         ...style,

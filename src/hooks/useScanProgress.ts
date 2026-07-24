@@ -3,7 +3,8 @@ import type { ScanProgressEvent } from '../api/types';
 
 // Resolve IPC bridge live so tests that stub `(window as any).mfl` per-test are observed.
 // (Same rationale as FilterBar/LibraryPage: the static `api` export binds once at import time.)
-const mfl = (): { scanner: { onProgress(cb: (p: ScanProgressEvent) => void): () => void } } => (window as any).mfl;
+const mfl = (): { scanner?: { onProgress(cb: (p: ScanProgressEvent) => void): () => void } } | undefined =>
+  (window as any).mfl;
 
 export interface ScanProgressState extends ScanProgressEvent {
   // 'flash' 用来在 received 'done'/'error' 后短暂展示结果消息，1.5s 后清掉整条进度条。
@@ -13,7 +14,10 @@ export interface ScanProgressState extends ScanProgressEvent {
 export function useScanProgress() {
   const [progress, setProgress] = useState<ScanProgressState | null>(null);
   useEffect(() => {
-    const off = mfl().scanner.onProgress(p => {
+    // 浏览器直接打开 Vite 时没有 preload → window.mfl 为空；勿抛错导致整页白屏。
+    const api = mfl()?.scanner;
+    if (!api?.onProgress) return;
+    const off = api.onProgress(p => {
       if (p.stage === 'done' || p.stage === 'error') {
         // 先短暂显示一条"扫描完成 / 扫描失败"消息，再清掉。
         // 这避免了"扫描中 452/452"在所有页面持续残留的问题；

@@ -105,11 +105,14 @@ export default function FilmTable({
 
   useEffect(() => {
     if (!colMenuOpen) return;
+    // 用 click（冒泡阶段）而不是 mousedown：
+    // mousedown 阶段 setState 关菜单会触发整表重渲染，同一指针序列里随后的
+    // input focus/选区可能被吃掉（表现为点搜索框/表单却无法输入）。
     const close = (e: MouseEvent) => {
       if (colMenuRef.current && !colMenuRef.current.contains(e.target as Node)) setColMenuOpen(false);
     };
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
   }, [colMenuOpen]);
 
   useLayoutEffect(() => {

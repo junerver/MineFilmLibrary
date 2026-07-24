@@ -20,7 +20,8 @@ async function createWindow() {
     },
   });
   if (isDev) {
-    await win.loadURL('http://localhost:5173');
+    // 与 vite.config server.host/port 对齐；勿用 localhost（可能解析到仅 IPv6 的 ::1）
+    await win.loadURL('http://127.0.0.1:5173');
   } else {
     await win.loadFile(path.join(__dirname, '../dist-renderer/index.html'));
   }

@@ -27,6 +27,7 @@ export interface ScanStats {
   dir_added: number;
   dir_updated: number;
   dir_removed: number;
+  code_repaired: number;
 }
 
 /** 扫描阶段暂存的旧规则结果，仅在刮削失败时用于兜底。 */
@@ -45,8 +46,22 @@ export interface ScanResult extends ScanStats {
   addedFilms: ScanAddedFilm[];
 }
 
+function shouldRepairStoredCode(
+  storedCode: string | null,
+  parsedCode: string | null,
+  scrapedAt: number | null,
+): boolean {
+  if (scrapedAt != null || !parsedCode) return false;
+  if (!storedCode?.trim()) return true;
+  const normalize = (value: string) => value.replace(/[-_]/g, '').toLowerCase();
+  const stored = normalize(storedCode);
+  const parsed = normalize(parsedCode);
+  // 只修复旧解析器留下的严格前缀（如 S2 -> S2MBD-016），不覆盖人工完整编号。
+  return parsed.length > stored.length && parsed.startsWith(stored);
+}
+
 export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult {
-  const stats: ScanStats = { dir_seen: 0, dir_added: 0, dir_updated: 0, dir_removed: 0 };
+  const stats: ScanStats = { dir_seen: 0, dir_added: 0, dir_updated: 0, dir_removed: 0, code_repaired: 0 };
   const addedFilms: ScanAddedFilm[] = [];
   const visits = Array.from(walkFilmDirs(opts.rootPath, opts.maxDepth));
 
@@ -64,7 +79,20 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
 
     const key = pathKey(v.filmAbsPath);
     const prev = baseline.get(key);
+    const parsed = parseFilmDirName(v.filmDirName);
+    const repairCode = !!prev
+      && prev.is_deleted === 0
+      && shouldRepairStoredCode(prev.code, parsed.code, prev.scraped_at);
     if (opts.mode === 'incremental' && prev && v.mtime_ms === prev.fs_mtime_ms) {
+      if (repairCode) {
+        db.prepare(`UPDATE films SET
+          code=?,
+          scan_status=CASE WHEN scan_status='unknown' THEN 'partial' ELSE scan_status END,
+          updated_at=?
+          WHERE id=?`
+        ).run(parsed.code, nowMs(), prev.id);
+        stats.code_repaired++;
+      }
       baseline.delete(key);
       continue;
     }
@@ -80,14 +108,22 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
           db.prepare('UPDATE films SET fs_mtime_ms=?, updated_at=? WHERE id=?')
             .run(v.mtime_ms, nowMs(), prev.id);
         }
+        if (repairCode) {
+          db.prepare(`UPDATE films SET
+            code=?,
+            scan_status=CASE WHEN scan_status='unknown' THEN 'partial' ELSE scan_status END,
+            updated_at=?
+            WHERE id=?`
+          ).run(parsed.code, nowMs(), prev.id);
+        }
         replaceFilmFiles(db, prev.id, files);
       });
       if (dirChanged) stats.dir_updated++;
+      if (repairCode) stats.code_repaired++;
       baseline.delete(key);
       continue;
     }
 
-    const parsed = parseFilmDirName(v.filmDirName);
     // 扫描只负责建立路径/编号/文件清单。目录名解析结果暂存为刮削失败时的
     // 兜底数据，避免扫描阶段直接把目录命名当成正式元数据来源。
     const initializeMetadata = !filmCodeExists(db, parsed.code);

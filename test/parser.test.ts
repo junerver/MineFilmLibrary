@@ -63,6 +63,49 @@ describe('parseFilmDirName', () => {
     expect(r.title).toBe('Sample title');
     expect(r.scan_status).toBe('parsed');
   });
+  it.each([
+    [
+      'S2MBD-016-C [FHD] 波多野結衣臨場感溢出的濃厚SEX Encore Vol.16',
+      'S2MBD-016',
+      '波多野結衣臨場感溢出的濃厚SEX Encore Vol.16',
+    ],
+    [
+      '122813-509-carib-C [FHD]半澤直美癡女10倍奉還辦公室OL',
+      '122813-509-carib',
+      '半澤直美癡女10倍奉還辦公室OL',
+    ],
+    [
+      '261ARA-417-C [FHD] 希望自己變得更變態的癡女美容師',
+      '261ARA-417',
+      '希望自己變得更變態的癡女美容師',
+    ],
+  ])('supports mixed and numeric-leading codes: %s', (raw, code, title) => {
+    expect(parseFilmDirName(raw)).toEqual({
+      code,
+      locale: 'C',
+      tags: ['FHD'],
+      title,
+      scan_status: 'parsed',
+    });
+  });
+  it('keeps a mixed x1x prefix and adjacent tags', () => {
+    expect(parseFilmDirName('x1x-111860 [FHD][无]')).toEqual({
+      code: 'x1x-111860',
+      locale: null,
+      tags: ['FHD', '无'],
+      title: null,
+      scan_status: 'partial',
+    });
+  });
+  it('treats a trailing SD token as video quality instead of part of the code', () => {
+    expect(parseFilmDirName('RHJ-315-SD')).toEqual({
+      code: 'RHJ-315',
+      locale: null,
+      tags: ['SD'],
+      title: null,
+      scan_status: 'partial',
+    });
+  });
   it('skips empty placeholder brackets in tags', () => {
     const r = parseFilmDirName('CJOD-295 [ ] [   ] [FHD] T');
     expect(r.code).toBe('CJOD-295');

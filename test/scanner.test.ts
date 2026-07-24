@@ -259,6 +259,44 @@ describe('runScan full mode', () => {
     expect(copy.cover_path).toBeNull();
   });
 
+  it('repairs null or legacy-truncated codes during a full rescan', () => {
+    const dirs = [
+      '0-J/S2MBD-016-C [FHD] Title A',
+      '0-J/122813-509-carib-C [FHD] Title B',
+      '0-J/261ARA-417-C [FHD] Title C',
+      '0-J/x1x-111860 [FHD][无]',
+    ];
+    for (const dir of dirs) {
+      mkdir(dir);
+      touch(`${dir}/a.mp4`);
+    }
+    runScan(db, { mode: 'full', rootPath, defaultType: 'actor' });
+    db.prepare("UPDATE films SET code='S2' WHERE raw_dir_name LIKE 'S2MBD-%'").run();
+    db.prepare("UPDATE films SET code='x1' WHERE raw_dir_name LIKE 'x1x-%'").run();
+    db.prepare("UPDATE films SET code=NULL WHERE raw_dir_name NOT LIKE 'S2MBD-%' AND raw_dir_name NOT LIKE 'x1x-%'").run();
+
+    const result = runScan(db, { mode: 'full', rootPath, defaultType: 'actor' });
+    const codes = (db.prepare('SELECT code FROM films ORDER BY raw_dir_name').all() as { code: string }[])
+      .map(row => row.code);
+
+    expect(result.code_repaired).toBe(4);
+    expect(codes).toEqual(['122813-509-carib', '261ARA-417', 'S2MBD-016', 'x1x-111860']);
+  });
+
+  it('does not overwrite a complete manual code or any scraped code', () => {
+    mkdir('0-J/S2MBD-016-C [FHD] Title');
+    touch('0-J/S2MBD-016-C [FHD] Title/a.mp4');
+    runScan(db, { mode: 'full', rootPath, defaultType: 'actor' });
+
+    db.prepare("UPDATE films SET code='MANUAL-999', scraped_at=NULL").run();
+    expect(runScan(db, { mode: 'full', rootPath, defaultType: 'actor' }).code_repaired).toBe(0);
+    expect((db.prepare('SELECT code FROM films').get() as { code: string }).code).toBe('MANUAL-999');
+
+    db.prepare("UPDATE films SET code='S2', scraped_at=?").run(Date.now());
+    expect(runScan(db, { mode: 'full', rootPath, defaultType: 'actor' }).code_repaired).toBe(0);
+    expect((db.prepare('SELECT code FROM films').get() as { code: string }).code).toBe('S2');
+  });
+
   // Q5：同一演员的两个目录名（比如一个是别名），先扫一次会建出两个 actor；
   // 用户在 UI 把第二个名字加成第一个的 alias 后，再扫不应再新建 actor。
   it('alias resolution: second alias-named dir folds into canonical actor', () => {

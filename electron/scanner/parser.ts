@@ -22,12 +22,17 @@ export function parseParentDirName(raw: string, opts: ParentParseOptions): Parse
 // FC2-PPV 编号中间还有厂商段（例如 FC2-PPV-739673），不能让通用规则
 // 先截成 "FC2"。保留原始大小写和分隔符，便于后续按原编号刮削。
 const FC2_CODE_RE = /^(FC2[-_]?PPV[-_]?\d+)/i;
-const CODE_RE = /^([A-Za-z]+[-_]?[0-9]+)/;
+// 编号前缀并不总是“纯字母 + 数字”：
+// - S2MBD-016 / 261ARA-417：厂商段本身是字母数字混合；
+// - 122813-509-carib：数字开头且带厂商后缀。
+// 以 locale、画质 token、方括号或空白作为编号边界，并要求至少含一个数字，
+// 避免把普通英文标题的首词误识别成编号。
+const CODE_RE = /^((?=[A-Za-z0-9_-]*\d)[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*?)(?=-(?:[CcUu])(?=$|\s|\[)|-(?:FHD|UHD|HD|SD|4K)(?=$|\s|\[)|\s|\[|$)/i;
 const LOCALE_RE = /^-([CcUu])/;
 const TAG_RE = /^\s*\[([^\]]+)\]/;
 // 目录末尾常见的画质后缀不是影片标题；只接受明确的独立 token，
 // 避免把类似 "-HDsomething" 的真实标题前缀误吞。
-const DASH_TAG_RE = /^-(FHD|UHD|HD|4K)(?=$|\s|\[)/i;
+const DASH_TAG_RE = /^-(FHD|UHD|HD|SD|4K)(?=$|\s|\[)/i;
 
 export function parseFilmDirName(raw: string): ParsedDir {
   let s = raw.trim();

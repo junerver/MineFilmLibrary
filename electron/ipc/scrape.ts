@@ -45,7 +45,7 @@ function sampleConcurrency(): number {
 }
 
 /** 批量影片并发。设置项 scrape_film_concurrency，默认 6。 */
-function filmConcurrencyDefault(): number {
+export function filmConcurrencyDefault(): number {
   return readIntSetting('scrape_film_concurrency', 6, 1, 16);
 }
 
@@ -406,53 +406,80 @@ async function runBatchScrape(filmIds: number[], concurrency: number): Promise<B
     cancelled: batchCancel,
   });
 
-  emitBatchProgress(snapshot('批量刮削开始'));
+  try {
+    emitBatchProgress(snapshot('批量刮削开始'));
 
-  await mapPool(ids, Math.max(1, Math.min(concurrency, 16)), async (filmId) => {
-    if (batchCancel) {
-      skip++;
-      done++;
-      emitBatchProgress(snapshot('已取消，跳过剩余'));
-      return;
-    }
+    await mapPool(ids, Math.max(1, Math.min(concurrency, 16)), async (filmId) => {
+      if (batchCancel) {
+        skip++;
+        done++;
+        emitBatchProgress(snapshot('已取消，跳过剩余'));
+        return;
+      }
 
-    const film = getDb().prepare('SELECT id, code, scraped_at FROM films WHERE id=?').get(filmId) as
-      { id: number; code: string | null; scraped_at: number | null } | undefined;
-    const codeLabel = film?.code ? film.code.toUpperCase() : `#${filmId}`;
-    if (!film?.code) {
-      skip++;
-      done++;
-      emitBatchProgress(snapshot(`跳过无编号 ${codeLabel}`));
-      return;
-    }
-    // 已刮削过的跳过，避免重复耗时
-    if (film.scraped_at) {
-      skip++;
-      done++;
-      emitBatchProgress(snapshot(`跳过已刮削 ${codeLabel}`));
-      log.info(TAG, `batch skip already scraped film#${filmId} at ${film.scraped_at}`);
-      return;
-    }
+      const film = getDb().prepare('SELECT id, code, scraped_at FROM films WHERE id=?').get(filmId) as
+        { id: number; code: string | null; scraped_at: number | null } | undefined;
+      const codeLabel = film?.code ? film.code.toUpperCase() : `#${filmId}`;
+      if (!film?.code) {
+        skip++;
+        done++;
+        emitBatchProgress(snapshot(`跳过无编号 ${codeLabel}`));
+        return;
+      }
+      // 已刮削过的跳过，避免重复耗时
+      if (film.scraped_at) {
+        skip++;
+        done++;
+        emitBatchProgress(snapshot(`跳过已刮削 ${codeLabel}`));
+        log.info(TAG, `batch skip already scraped film#${filmId} at ${film.scraped_at}`);
+        return;
+      }
 
-    active.set(filmId, codeLabel);
-    emitBatchProgress(snapshot(`刮削中 ${codeLabel}`));
+      active.set(filmId, codeLabel);
+      emitBatchProgress(snapshot(`刮削中 ${codeLabel}`));
+      try {
+        await scrapeOneFilm(filmId);
+        ok++;
+      } catch (e: unknown) {
+        fail++;
+        log.error(TAG, `batch film#${filmId} fail`, String((e as Error)?.message ?? e));
+      } finally {
+        active.delete(filmId);
+        done++;
+        emitBatchProgress(snapshot(batchCancel ? '收尾中…' : `进度 ${done}/${total}`));
+      }
+    });
+
+    const final = snapshot(batchCancel ? '批量刮削已停止' : '批量刮削完成', true);
+    emitBatchProgress(final);
+    return final;
+  } catch (error: unknown) {
+    const failed = snapshot('批量刮削异常中止', true);
     try {
-      await scrapeOneFilm(filmId);
-      ok++;
-    } catch (e: unknown) {
-      fail++;
-      log.error(TAG, `batch film#${filmId} fail`, String((e as Error)?.message ?? e));
-    } finally {
-      active.delete(filmId);
-      done++;
-      emitBatchProgress(snapshot(batchCancel ? '收尾中…' : `进度 ${done}/${total}`));
+      emitBatchProgress(failed);
+    } catch (emitError: unknown) {
+      log.error(TAG, 'failed to emit batch abort progress', String((emitError as Error)?.message ?? emitError));
     }
-  });
+    throw error;
+  } finally {
+    // 主进程任务异常也必须释放互斥状态，否则后续扫描和手动批量会永久误判为仍在运行。
+    batchRunning = false;
+  }
+}
 
-  const final = snapshot(batchCancel ? '批量刮削已停止' : '批量刮削完成', true);
-  emitBatchProgress(final);
-  batchRunning = false;
-  return final;
+export function isBatchScrapeRunning(): boolean {
+  return batchRunning;
+}
+
+/** 扫描自动续刮与手动批量刮削共用同一主进程任务入口。 */
+export async function startBatchScrape(
+  filmIds: number[],
+  concurrency = filmConcurrencyDefault(),
+): Promise<BatchScrapeProgress> {
+  if (batchRunning) throw new Error('已有批量刮削任务在进行，请等待完成或先停止');
+  if (!Array.isArray(filmIds) || filmIds.length === 0) throw new Error('未选择影片');
+  log.info(TAG, `batch start n=${filmIds.length} concurrency=${concurrency}`);
+  return runBatchScrape(filmIds, concurrency);
 }
 
 export function registerScrapeIpc() {
@@ -471,11 +498,7 @@ export function registerScrapeIpc() {
 
   // 批量：主进程并行跑，与渲染进程页面生命周期解耦——切页不中断。
   ipcMain.handle('scrape:javbusBatch', async (_e, filmIds: number[], concurrency?: number) => {
-    if (batchRunning) throw new Error('已有批量刮削任务在进行，请等待完成或先停止');
-    if (!Array.isArray(filmIds) || filmIds.length === 0) throw new Error('未选择影片');
-    const conc = concurrency ?? filmConcurrencyDefault();
-    log.info(TAG, `batch start n=${filmIds.length} concurrency=${conc}`);
-    return runBatchScrape(filmIds, conc);
+    return startBatchScrape(filmIds, concurrency ?? filmConcurrencyDefault());
   });
 
   ipcMain.handle('scrape:cancelBatch', () => {

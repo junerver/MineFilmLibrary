@@ -8,6 +8,10 @@ interface ScanResultStats {
   dir_added: number;
   dir_updated: number;
   dir_removed: number;
+  code_repaired: number;
+  scrape_candidates: number;
+  scrape_resumed: number;
+  scrape_deferred: number;
   scrape_ok: number;
   scrape_fail: number;
   scrape_skipped: number;
@@ -40,7 +44,9 @@ export default function ScanPage() {
       const stats = r.stats as ScanResultStats;
       toast.push({
         text: `扫描完成：新增 ${stats.dir_added}，文件变化 ${stats.dir_updated}，移除 ${stats.dir_removed}（扫描不删除记录）`
-          + `；新片刮削成功 ${stats.scrape_ok}，失败 ${stats.scrape_fail}，跳过 ${stats.scrape_skipped}`
+          + `，修正编号 ${stats.code_repaired}`
+          + `；待刮削 ${stats.scrape_candidates}（续刮 ${stats.scrape_resumed}），成功 ${stats.scrape_ok}，失败 ${stats.scrape_fail}，跳过 ${stats.scrape_skipped}`
+          + (stats.scrape_deferred ? `，另有 ${stats.scrape_deferred} 部因已有批量任务而延后` : '')
           + `；目录兜底 ${stats.fallback_applied}，兜底失败 ${stats.fallback_fail}`,
         kind: 'success',
       });

@@ -198,7 +198,17 @@ export function listActorsOfFilm(db: Database.Database, filmId: number): number[
   return rows.map(r => r.actor_id);
 }
 
-export function listAllFilmPaths(db: Database.Database, rootLike: string): { id: number; abs_path: string; fs_mtime_ms: number; is_deleted: number }[] {
+interface StoredFilmPath {
+  id: number;
+  abs_path: string;
+  fs_mtime_ms: number;
+  is_deleted: number;
+  code: string | null;
+  scraped_at: number | null;
+  scan_status: string;
+}
+
+function rootPathQuery(rootLike: string) {
   // 只匹配根目录本身及其真正的子路径。单纯使用 `${rootLike}%` 会把
   // `D:\\media\\other` 的兄弟目录 `D:\\media\\other精品` 也纳入基线，
   // 随后在扫描 `other` 时被误判为缺失并软删除。
@@ -207,12 +217,44 @@ export function listAllFilmPaths(db: Database.Database, rootLike: string): { id:
   const descendantPrefix = root.endsWith(separator) ? root : `${root}${separator}`;
   // 使用独立的 ESCAPE 字符，避免根路径中的 `%` / `_` 被当成 LIKE 通配符。
   const escapeLike = (value: string) => value.replace(/[!%_]/g, ch => `!${ch}`);
+  return { root, descendantPattern: `${escapeLike(descendantPrefix)}%` };
+}
+
+export function listAllFilmPaths(db: Database.Database, rootLike: string): StoredFilmPath[] {
+  const { root, descendantPattern } = rootPathQuery(rootLike);
   const rows = db.prepare(`
-    SELECT id, abs_path, fs_mtime_ms, is_deleted
+    SELECT id, abs_path, fs_mtime_ms, is_deleted, code, scraped_at, scan_status
     FROM films
     WHERE abs_path = ? COLLATE NOCASE OR abs_path LIKE ? ESCAPE '!'
-  `).all(root, `${escapeLike(descendantPrefix)}%`) as any[];
+  `).all(root, descendantPattern) as StoredFilmPath[];
   return rows;
+}
+
+/**
+ * 返回扫描根下可自动刮削的 canonical 影片。
+ * 同编号只取全库最早入库的一条，与首次扫描的 initializeMetadata 语义一致。
+ */
+export function listPendingFilmScrapes(
+  db: Database.Database,
+  rootLike: string,
+): { id: number; code: string; abs_path: string }[] {
+  const { root, descendantPattern } = rootPathQuery(rootLike);
+  return db.prepare(`
+    SELECT f.id, f.code, f.abs_path
+    FROM films f
+    WHERE (f.abs_path = ? COLLATE NOCASE OR f.abs_path LIKE ? ESCAPE '!')
+      AND f.is_deleted = 0
+      AND f.scraped_at IS NULL
+      AND f.code IS NOT NULL
+      AND TRIM(f.code) <> ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM films earlier
+        WHERE earlier.id < f.id
+          AND earlier.code = f.code COLLATE NOCASE
+      )
+    ORDER BY f.id
+  `).all(root, descendantPattern) as { id: number; code: string; abs_path: string }[];
 }
 
 export function markSoftDeleted(db: Database.Database, ids: number[]) {

@@ -1,11 +1,12 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import { getDb } from '../db';
 import { nowMs } from '../db/dao';
+import { listPendingFilmScrapes } from '../db/queries';
 import { runScan } from '../scanner';
 import type { ScanProgress } from '../scanner';
-import { enrichAddedFilms } from '../scanner/enrich';
+import { applyUnScrapedAddedFilmFallbacks } from '../scanner/enrich';
 import { DEFAULT_SCAN_MAX_DEPTH, MAX_SCAN_MAX_DEPTH, MIN_SCAN_MAX_DEPTH } from '../scanner/walker';
-import { scrapeOneFilm } from './scrape';
+import { filmConcurrencyDefault, isBatchScrapeRunning, startBatchScrape } from './scrape';
 import * as log from '../util/logger';
 
 const TAG = 'scanner';
@@ -55,12 +56,48 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
         onProgress,
       });
       const { addedFilms, ...scanStats } = scanResult;
-      const enrichment = await enrichAddedFilms(getDb(), addedFilms, scrapeOneFilm, p => {
+      const pendingFilms = listPendingFilmScrapes(getDb(), root.path);
+      const addedIds = new Set(addedFilms.map(film => film.filmId));
+      const scrapeResumed = pendingFilms.filter(film => !addedIds.has(film.id)).length;
+      let scrapeOk = 0;
+      let scrapeFail = 0;
+      let scrapeBatchSkipped = 0;
+      let scrapeDeferred = 0;
+
+      if (pendingFilms.length > 0) {
+        if (isBatchScrapeRunning()) {
+          scrapeDeferred = pendingFilms.length;
+          log.warn(TAG, `auto batch deferred: another batch is running, pending=${pendingFilms.length}`);
+        } else {
+          log.info(
+            TAG,
+            `auto batch start root=${root.path} pending=${pendingFilms.length} resumed=${scrapeResumed}`,
+          );
+          const batch = await startBatchScrape(
+            pendingFilms.map(film => film.id),
+            filmConcurrencyDefault(),
+          );
+          scrapeOk = batch.ok;
+          scrapeFail = batch.fail;
+          scrapeBatchSkipped = batch.skip;
+        }
+      }
+
+      const fallback = applyUnScrapedAddedFilmFallbacks(getDb(), addedFilms, p => {
         const currentPath = p.film.absPath;
         onProgress({ stage: p.stage, current: p.current, total: p.total, currentPath });
-        if (p.error) log.warn(TAG, `film#${p.film.filmId} scrape failed, applying fallback`, p.error);
       });
-      const stats = { ...scanStats, ...enrichment };
+      const stats = {
+        ...scanStats,
+        scrape_candidates: pendingFilms.length,
+        scrape_resumed: scrapeResumed,
+        scrape_deferred: scrapeDeferred,
+        scrape_ok: scrapeOk,
+        scrape_fail: scrapeFail,
+        scrape_skipped: scrapeBatchSkipped + fallback.scrape_skipped,
+        fallback_applied: fallback.fallback_applied,
+        fallback_fail: fallback.fallback_fail,
+      };
       const finished = nowMs();
       if (mode === 'full') getDb().prepare('UPDATE scan_roots SET last_full_scan_at=? WHERE id=?').run(finished, rootId);
       else getDb().prepare('UPDATE scan_roots SET last_incremental_scan_at=? WHERE id=?').run(finished, rootId);

@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('mfl', {
     runFull: (id: number) => invoke('scanner:runFull', id),
     runIncremental: (id: number) => invoke('scanner:runIncremental', id),
     listRuns: (limit = 50) => invoke('scanner:listRuns', limit),
+    clearHistory: () => invoke('scanner:clearHistory'),
     onProgress: (cb: (p: any) => void) => {
       const h = (_e: unknown, payload: any) => cb(payload);
       ipcRenderer.on('scanner:progress', h);

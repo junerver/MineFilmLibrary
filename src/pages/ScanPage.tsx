@@ -63,16 +63,22 @@ export default function ScanPage() {
         <input value={newPath} onChange={e => setNewPath(e.target.value)} placeholder="路径，如 F:\Movie\已分类" style={{ flex: 1, padding: 6, background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4 }} />
         <button onClick={add}>添加</button>
       </div>
-      <table style={{ width: '100%' }}>
-        <thead><tr><th>路径</th><th>标签</th><th>上次全量</th><th>上次增量</th><th>操作</th></tr></thead>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead><tr style={{ textAlign: 'left' }}>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>路径</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>标签</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>上次全量</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>上次增量</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>操作</th>
+        </tr></thead>
         <tbody>
-          {roots.map(r => (
-            <tr key={r.id}>
-              <td>{r.path}</td>
-              <td>{r.label ?? ''}</td>
-              <td>{r.last_full_scan_at ? new Date(r.last_full_scan_at).toLocaleString() : '—'}</td>
-              <td>{r.last_incremental_scan_at ? new Date(r.last_incremental_scan_at).toLocaleString() : '—'}</td>
-              <td style={{ display: 'flex', gap: 4 }}>
+          {roots.map((r, i) => (
+            <tr key={r.id} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '4px 6px' }}>{r.path}</td>
+              <td style={{ padding: '4px 6px' }}>{r.label ?? ''}</td>
+              <td style={{ padding: '4px 6px' }}>{r.last_full_scan_at ? new Date(r.last_full_scan_at).toLocaleString() : '—'}</td>
+              <td style={{ padding: '4px 6px' }}>{r.last_incremental_scan_at ? new Date(r.last_incremental_scan_at).toLocaleString() : '—'}</td>
+              <td style={{ padding: '4px 6px', display: 'flex', gap: 4 }}>
                 <button onClick={() => run(r.id, 'full')}>全量</button>
                 <button onClick={() => run(r.id, 'incremental')}>增量</button>
                 <button onClick={() => { mfl().scanner.removeRoot(r.id).then(reload); }}>删除</button>
@@ -81,17 +87,30 @@ export default function ScanPage() {
           ))}
         </tbody>
       </table>
-      <h3 style={{ marginTop: 16 }}>历史</h3>
-      <table style={{ width: '100%', fontSize: 12 }}>
-        <thead><tr><th>开始</th><th>模式</th><th>状态</th><th>新增/更新/移除</th><th>错误</th></tr></thead>
+      <h3 style={{ marginTop: 16 }}>历史
+        <button style={{ marginLeft: 12, fontSize: 12 }} onClick={async () => {
+          await mfl().scanner.clearHistory();
+          reload();
+        }}>清除历史</button>
+      </h3>
+      <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+        <thead><tr style={{ textAlign: 'left' }}>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>开始</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>路径</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>模式</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>状态</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>新增/更新/移除</th>
+          <th style={{ textAlign: 'left', padding: '4px 6px' }}>错误</th>
+        </tr></thead>
         <tbody>
-          {runs.map(r => (
-            <tr key={r.id}>
-              <td>{new Date(r.started_at).toLocaleString()}</td>
-              <td>{r.mode}</td>
-              <td>{r.status}</td>
-              <td>{r.dir_added}/{r.dir_updated}/{r.dir_removed}</td>
-              <td>{r.error_message ?? ''}</td>
+          {runs.map((r, i) => (
+            <tr key={r.id} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.04)' }}>
+              <td style={{ padding: '4px 6px' }}>{new Date(r.started_at).toLocaleString()}</td>
+              <td style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '4px 6px' }} title={(r as any).root_path ?? ''}>{(r as any).root_path ?? '—'}</td>
+              <td style={{ padding: '4px 6px' }}>{r.mode === 'full' ? '全量' : '增量'}</td>
+              <td style={{ padding: '4px 6px' }}>{r.status === 'done' ? '完成' : r.status === 'error' ? '失败' : '运行中'}</td>
+              <td style={{ padding: '4px 6px' }}>{r.dir_added}/{r.dir_updated}/{r.dir_removed}</td>
+              <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '4px 6px' }} title={r.error_message ?? ''}>{r.error_message ?? ''}</td>
             </tr>
           ))}
         </tbody>

@@ -121,5 +121,15 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
 
   ipcMain.handle('scanner:runFull', (_e, rootId: number) => run(rootId, 'full'));
   ipcMain.handle('scanner:runIncremental', (_e, rootId: number) => run(rootId, 'incremental'));
-  ipcMain.handle('scanner:listRuns', (_e, limit = 50) => getDb().prepare('SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT ?').all(limit));
+  ipcMain.handle('scanner:clearHistory', () => {
+    getDb().prepare('DELETE FROM scan_runs').run();
+    return true;
+  });
+
+  ipcMain.handle('scanner:listRuns', (_e, limit = 50) => getDb().prepare(`
+    SELECT r.*, sr.path AS root_path
+    FROM scan_runs r
+    LEFT JOIN scan_roots sr ON sr.id = r.root_id
+    ORDER BY r.started_at DESC LIMIT ?
+  `).all(limit));
 }

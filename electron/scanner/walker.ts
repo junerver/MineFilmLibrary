@@ -63,8 +63,12 @@ function looksLikeActorOrGenre(name: string): boolean {
 
 function looksLikeFilmDir(name: string): boolean {
   const txt = name.trim();
-  // 原始两级启发：以"字母+数字"打头 (ABC-123 / abc_123) 或含 [标签]。
-  return /^[A-Za-z]+[-_]?[0-9]+/.test(txt) || /\[[^\]]+\]/.test(txt);
+  // 原始两级启发:以"字母+数字"打头 (ABC-123 / abc_123) 或含 [标签]。
+  if (/^[A-Za-z]+[-_]?[0-9]+/.test(txt) || /\[[^\]]+\]/.test(txt)) return true;
+  // 特殊厂商目录名,如 Tokyo-Hot n0822、Carib-xxx、1pondo_xxx。
+  // 这些目录名中的编号不位于最开头,但 parseFilmDirName 中的 matchVendorCode 能识别。
+  // 保持与 parser.ts 中 matchVendorCode 的 vendor 关键字同步。
+  return /tokyo[-_\s]?hot/i.test(txt) || /carib/i.test(txt) || /1pon(?:do)?/i.test(txt);
 }
 
 function clampScanDepth(value: number | undefined): number {
@@ -97,9 +101,6 @@ export function* walkFilmDirs(root: string, maxDepth = DEFAULT_SCAN_MAX_DEPTH): 
   let rootEntries: fs.Dirent[];
   try { rootEntries = fs.readdirSync(root, { withFileTypes: true }); }
   catch { return; }
-  const rootDirs = rootEntries.filter(e => e.isDirectory());
-  // 保留既有混合根语义：根下存在 0-/1- 父目录时，不把并列的编号目录误吞为平铺影片。
-  const suppressDirectFilms = rootDirs.some(d => looksLikeActorOrGenre(d.name));
 
   function* recurse(dir: string, depth: number, ancestors: string[], entries?: fs.Dirent[]): Iterable<FilmDirVisit> {
     let children = entries;
@@ -111,18 +112,15 @@ export function* walkFilmDirs(root: string, maxDepth = DEFAULT_SCAN_MAX_DEPTH): 
       if (!child.isDirectory()) continue;
       const childDepth = depth + 1;
       const childAbs = path.join(dir, child.name);
-      const isDirectSuppressed = childDepth === 1 && suppressDirectFilms;
       if (looksLikeFilmDir(child.name)) {
-        if (!isDirectSuppressed) {
-          const parent = resolveFilmParent(root, ancestors);
-          yield {
-            parentDirName: parent.name,
-            filmDirName: child.name,
-            filmAbsPath: childAbs,
-            parentAbsPath: parent.absPath,
-            mtime_ms: dirMtime(childAbs),
-          };
-        }
+        const parent = resolveFilmParent(root, ancestors);
+        yield {
+          parentDirName: parent.name,
+          filmDirName: child.name,
+          filmAbsPath: childAbs,
+          parentAbsPath: parent.absPath,
+          mtime_ms: dirMtime(childAbs),
+        };
         continue;
       }
       if (childDepth < depthLimit) {

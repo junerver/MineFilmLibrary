@@ -245,6 +245,7 @@ export function listPendingFilmScrapes(
     WHERE (f.abs_path = ? COLLATE NOCASE OR f.abs_path LIKE ? ESCAPE '!')
       AND f.is_deleted = 0
       AND f.scraped_at IS NULL
+      AND f.scrape_failed_at IS NULL
       AND f.code IS NOT NULL
       AND TRIM(f.code) <> ''
       AND NOT EXISTS (

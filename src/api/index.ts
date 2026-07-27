@@ -46,6 +46,7 @@ export interface MflApi {
     runFull(id: number): Promise<{ ok: boolean; stats?: any; error?: string }>;
     runIncremental(id: number): Promise<{ ok: boolean; stats?: any; error?: string }>;
     listRuns(limit?: number): Promise<T.ScanRunRow[]>;
+    clearHistory(): Promise<boolean>;
     onProgress(cb: (p: T.ScanProgressEvent) => void): () => void;
   };
   files: {

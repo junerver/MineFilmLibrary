@@ -33,9 +33,9 @@ export function registerLibraryIpc() {
     if (filter.duplicate_codes_only) where.push('code_count > 1');
     if (filter.favorites_only) where.push('is_favorite=1');
     if (filter.q) {
-      where.push('(code LIKE ? OR title LIKE ?)');
+      where.push('(code LIKE ? OR title LIKE ? OR id IN (SELECT film_id FROM film_tags WHERE tag LIKE ?) OR id IN (SELECT film_id FROM film_actors fa JOIN actors a ON a.id=fa.actor_id WHERE a.name LIKE ?))');
       const q = `%${filter.q}%`;
-      args.push(q, q);
+      args.push(q, q, q, q);
     }
     if (filter.locales?.length) {
       where.push(`locale IN (${filter.locales.map(() => '?').join(',')})`);

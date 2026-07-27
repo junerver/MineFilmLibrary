@@ -87,7 +87,7 @@ export type FileOpResult =
   | { ok: true; filmAbsPath?: string; parentAbsPath?: string; updatedFilms?: number; updatedFiles?: number }
   | { ok: false; error: string };
 export interface ScanRootRow { id: number; path: string; label: string | null; last_full_scan_at: number | null; last_incremental_scan_at: number | null; enabled: number; }
-export interface ScanRunRow { id: number; root_id: number; mode: 'full'|'incremental'; started_at: number; finished_at: number|null; dir_seen: number; dir_added: number; dir_updated: number; dir_removed: number; status: 'running'|'done'|'error'; error_message: string|null; }
+export interface ScanRunRow { id: number; root_id: number; mode: 'full'|'incremental'; started_at: number; finished_at: number|null; dir_seen: number; dir_added: number; dir_updated: number; dir_removed: number; status: 'running'|'done'|'error'; error_message: string|null; root_path?: string; }
 export interface CoverResult { kind: 'blob' | 'file'; mime: string; base64: string; }
 
 // 扫描任务包括目录发现、首次入库刮削和失败兜底；done/error 是终止事件。

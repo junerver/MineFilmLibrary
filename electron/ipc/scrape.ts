@@ -443,6 +443,8 @@ async function runBatchScrape(filmIds: number[], concurrency: number): Promise<B
       } catch (e: unknown) {
         fail++;
         log.error(TAG, `batch film#${filmId} fail`, String((e as Error)?.message ?? e));
+        // 标记刮削失败，后续自动刮削跳过
+        try { getDb().prepare('UPDATE films SET scrape_failed_at=? WHERE id=?').run(nowMs(), filmId); } catch {}
       } finally {
         active.delete(filmId);
         done++;

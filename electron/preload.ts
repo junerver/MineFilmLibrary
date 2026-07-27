@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('mfl', {
     softDelete: (id: number) => invoke('library:softDelete', id),
     hardDelete: (id: number) => invoke('library:hardDelete', id),
     restore: (id: number) => invoke('library:restore', id),
+    setFavorite: (id: number, favorite: boolean) => invoke('library:setFavorite', id, favorite),
   },
   actors: {
     list: () => invoke('actors:list'),
@@ -52,6 +53,9 @@ contextBridge.exposeInMainWorld('mfl', {
     pathStatus: (id: number) => invoke('files:pathStatus', id),
     openInFolder: (id: number) => invoke('files:openInFolder', id),
     restat: (id: number) => invoke('files:restat', id),
+    renameFilmDir: (id: number, newName: string) => invoke('files:renameFilmDir', id, newName),
+    renameParentDir: (id: number, newName: string) => invoke('files:renameParentDir', id, newName),
+    deleteFile: (filmId: number, fileId: number) => invoke('files:deleteFile', filmId, fileId),
   },
   cover: {
     getCover: (id: number, opts: any) => invoke('cover:getCover', id, opts),

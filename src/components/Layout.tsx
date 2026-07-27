@@ -10,7 +10,18 @@ const NAV: { to: string; label: string }[] = [
   { to: '/settings', label: '设置' },
 ];
 
+const LIBRARY_LAST_QUERY_KEY = 'mfl:libraryLastQuery';
+
 const mfl = (): any => (window as any).mfl;
+
+/** 侧栏「影片库」尽量带上最近一次筛选 query，避免点侧栏后丢失搜索/筛选。 */
+function libraryNavTo(): string {
+  try {
+    const last = sessionStorage.getItem(LIBRARY_LAST_QUERY_KEY);
+    if (last) return `/library?${last}`;
+  } catch { /* ignore */ }
+  return '/library';
+}
 
 export default function Layout() {
   const progress = useScanProgress();
@@ -21,10 +32,15 @@ export default function Layout() {
       <aside style={{ width: 200, borderRight: '1px solid #333', padding: 16 }}>
         <div style={{ fontWeight: 700, marginBottom: 16 }}>MineFilmLibrary</div>
         {NAV.map(n => (
-          <NavLink key={n.to} to={n.to} style={({ isActive }) => ({
-            display: 'block', padding: '6px 8px', borderRadius: 4,
-            background: isActive ? '#2a2a2a' : 'transparent', color: '#e0e0e0', textDecoration: 'none',
-          })}>{n.label}</NavLink>
+          <NavLink
+            key={n.to}
+            // 路由变化会重渲染 Layout；每次渲染读一次最近筛选，避免点侧栏丢 query。
+            to={n.to === '/library' ? libraryNavTo() : n.to}
+            style={({ isActive }) => ({
+              display: 'block', padding: '6px 8px', borderRadius: 4,
+              background: isActive ? '#2a2a2a' : 'transparent', color: '#e0e0e0', textDecoration: 'none',
+            })}
+          >{n.label}</NavLink>
         ))}
       </aside>
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

@@ -15,6 +15,26 @@ type DetailNavState = {
 
 const LIST_IDS_KEY = 'mfl:detailListIds';
 
+/** 从绝对路径取最后一段目录/文件名（渲染进程无 path 模块时的轻量实现）。 */
+function pathBaseName(abs: string): string {
+  const s = (abs || '').replace(/[/\\]+$/, '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+/** 从影片 abs_path 取父目录名；盘符根返回 null。 */
+function pathParentBaseName(abs: string): string | null {
+  const s = (abs || '').replace(/[/\\]+$/, '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  if (i < 0) return null;
+  const parent = s.slice(0, i);
+  // Windows 盘符根如 C: 或 C:
+  if (/^[a-zA-Z]:$/.test(parent) || parent === '') return null;
+  const j = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
+  const name = j >= 0 ? parent.slice(j + 1) : parent;
+  return name || null;
+}
+
 /**
  * 详情页大标题：避免「编号 + 标题」重复。
  * 例：code=xvsr-599, title="XVSR-599 絶対本番…" → 只显示 title。
@@ -102,6 +122,7 @@ export default function FilmDetailPage() {
   const [actorSuggestIdx, setActorSuggestIdx] = useState(-1);
   const [scraping, setScraping] = useState(false);
   const [scrapeStatus, setScrapeStatus] = useState<string | null>(null);
+  const [pathBusy, setPathBusy] = useState(false);
 
   /** 在列表中切换详情：保留 from + listIds，用 replace 避免堆叠 history。 */
   const goSibling = useCallback((targetId: number | undefined) => {
@@ -284,6 +305,18 @@ export default function FilmDetailPage() {
     }
   };
 
+  const toggleFavorite = async () => {
+    if (!film) return;
+    const next = !(film.is_favorite === 1);
+    try {
+      await mfl().library.setFavorite(film.id, next);
+      setFilm({ ...film, is_favorite: next ? 1 : 0 });
+      toast.push({ text: next ? '已收藏' : '已取消收藏', kind: 'success' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    }
+  };
+
   const restat = async () => {
     try {
       await mfl().files.restat(film.id);
@@ -293,6 +326,108 @@ export default function FilmDetailPage() {
       toast.push({ text: '已重新枚举文件', kind: 'success' });
     } catch (e: unknown) {
       toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    }
+  };
+
+  /** 重命名/删除后刷新详情与文件列表。 */
+  const reloadFilmAndFiles = async () => {
+    const f = await mfl().library.get(film.id);
+    if (f) {
+      setFilm(f);
+      setForm({
+        code: f.code,
+        title: f.title,
+        locale: f.locale,
+        notes: f.notes,
+        tags: f.tags.join(', '),
+        parent_dir_name: f.parent_dir_name,
+      });
+      setSelectedActors(f.actors ?? []);
+    }
+    setFiles(await mfl().files.listByFilm(film.id));
+    setPathStatus(await mfl().files.pathStatus(film.id));
+  };
+
+  const pathValid = pathStatus?.valid === true;
+
+  const renameFilmDir = async () => {
+    if (!film || !pathValid || pathBusy) return;
+    const current = pathBaseName(film.abs_path);
+    const input = window.prompt('重命名影片目录（仅改目录名，不重解析编号/标题）', current);
+    if (input == null) return;
+    const next = input.trim();
+    if (!next || next === current) return;
+    if (!confirm(
+      `确认将影片目录重命名？\n\n原名称：${current}\n新名称：${next}\n\n路径：${film.abs_path}\n\n此操作会修改磁盘目录，并更新库中本片路径。`,
+    )) return;
+    setPathBusy(true);
+    try {
+      const r = await mfl().files.renameFilmDir(film.id, next);
+      if (!r?.ok) {
+        toast.push({ text: r?.error || '重命名失败', kind: 'error' });
+        return;
+      }
+      await reloadFilmAndFiles();
+      toast.push({ text: '影片目录已重命名', kind: 'success' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setPathBusy(false);
+    }
+  };
+
+  const renameParentDir = async () => {
+    if (!film || !pathValid || pathBusy) return;
+    const current = pathParentBaseName(film.abs_path);
+    if (!current) {
+      toast.push({ text: '无法识别父目录', kind: 'error' });
+      return;
+    }
+    const input = window.prompt(
+      '重命名父目录（会影响该父目录下库内全部影片路径）',
+      current,
+    );
+    if (input == null) return;
+    const next = input.trim();
+    if (!next || next === current) return;
+    if (!confirm(
+      `危险操作：重命名父目录\n\n原名称：${current}\n新名称：${next}\n\n当前影片：${film.abs_path}\n\n将修改磁盘上的父目录，并批量更新库中所有位于该父路径下的影片（含文件路径）。确认继续？`,
+    )) return;
+    setPathBusy(true);
+    try {
+      const r = await mfl().files.renameParentDir(film.id, next);
+      if (!r?.ok) {
+        toast.push({ text: r?.error || '父目录重命名失败', kind: 'error' });
+        return;
+      }
+      await reloadFilmAndFiles();
+      const n = r.updatedFilms ?? 0;
+      toast.push({ text: `父目录已重命名（更新 ${n} 条影片）`, kind: 'success' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setPathBusy(false);
+    }
+  };
+
+  const deleteFilmFile = async (file: FilmFileRow) => {
+    if (!film || !pathValid || pathBusy) return;
+    if (!confirm(
+      `确认删除文件并移入系统回收站？\n\n${file.name}\n${file.abs_path}\n\n此操作不可通过本应用撤销（可从系统回收站恢复）。`,
+    )) return;
+    setPathBusy(true);
+    try {
+      const r = await mfl().files.deleteFile(film.id, file.id);
+      if (!r?.ok) {
+        toast.push({ text: r?.error || '删除失败', kind: 'error' });
+        return;
+      }
+      setFiles(await mfl().files.listByFilm(film.id));
+      toast.push({ text: `已删除：${file.name}`, kind: 'success' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setPathBusy(false);
     }
   };
 
@@ -395,8 +530,27 @@ export default function FilmDetailPage() {
           </>
         )}
       </div>
-      {/* 刮削标记在标题前，位置固定；标题若已含编号则不重复前缀编号；标题单行省略 */}
+      {/* 收藏/刮削标记在标题前；标题若已含编号则不重复前缀编号；标题单行省略 */}
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'nowrap', minWidth: 0, overflow: 'hidden' }}>
+        <button
+          type="button"
+          onClick={() => void toggleFavorite()}
+          title={film.is_favorite === 1 ? '取消收藏' : '收藏影片'}
+          style={{
+            fontSize: 12,
+            fontWeight: 500,
+            padding: '2px 10px',
+            borderRadius: 10,
+            cursor: 'pointer',
+            flexShrink: 0,
+            border: film.is_favorite === 1 ? '1px solid #6a5800' : '1px solid #444',
+            background: film.is_favorite === 1 ? '#3a3200' : '#2a2a2a',
+            color: film.is_favorite === 1 ? '#e6b800' : '#aaa',
+          }}
+          aria-label={film.is_favorite === 1 ? '取消收藏' : '收藏'}
+        >
+          {film.is_favorite === 1 ? '★ 已收藏' : '☆ 收藏'}
+        </button>
         <button
           type="button"
           onClick={() => void toggleScrapedMark()}
@@ -446,9 +600,33 @@ export default function FilmDetailPage() {
               <Row k="刮削" v={<PrivacyText blur={blurText}>{film.scraped_at ? new Date(film.scraped_at).toLocaleString() : '未刮削'}</PrivacyText>} />
               <Row k="父目录" v={<PrivacyText blur={blurText}>{film.parent_dir_name || '—'}</PrivacyText>} />
               <Row k="路径" v={
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%', flexWrap: 'wrap' }}>
                   <PathStatusIcon status={pathStatus} />
                   <PrivacyText blur={blurText}>{film.abs_path || '—'}</PrivacyText>
+                  {pathValid && (
+                    <span style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        disabled={pathBusy}
+                        onClick={() => void renameFilmDir()}
+                        title="重命名影片目录（磁盘 + 库路径）"
+                        style={{ fontSize: 11, padding: '1px 6px' }}
+                      >
+                        重命名目录
+                      </button>
+                      {pathParentBaseName(film.abs_path) && (
+                        <button
+                          type="button"
+                          disabled={pathBusy}
+                          onClick={() => void renameParentDir()}
+                          title="重命名父目录（会批量更新同级路径下全部影片）"
+                          style={{ fontSize: 11, padding: '1px 6px' }}
+                        >
+                          重命名父目录
+                        </button>
+                      )}
+                    </span>
+                  )}
                 </span>
               } />
               <Row k="备注" v={<PrivacyText blur={blurText}>{film.notes || '—'}</PrivacyText>} />
@@ -553,7 +731,15 @@ export default function FilmDetailPage() {
       </div>
       <h3 style={{ marginTop: 16 }}>文件</h3>
       <table style={{ width: '100%', fontSize: 12 }}>
-        <thead><tr><th>名称</th><th>类型</th><th>体积</th><th>修改时间</th></tr></thead>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>类型</th>
+            <th>体积</th>
+            <th>修改时间</th>
+            {pathValid && <th style={{ width: 72 }}>操作</th>}
+          </tr>
+        </thead>
         <tbody>
           {files.map(f => (
             <tr key={f.id}>
@@ -561,11 +747,24 @@ export default function FilmDetailPage() {
               <td>{f.is_video ? '视频' : (f.is_image ? '图片' : f.ext)}</td>
               <td>{(f.size / 1024 / 1024).toFixed(1)} MB</td>
               <td>{new Date(f.mtime_ms).toLocaleString()}</td>
+              {pathValid && (
+                <td>
+                  <button
+                    type="button"
+                    disabled={pathBusy}
+                    onClick={() => void deleteFilmFile(f)}
+                    title="移入系统回收站"
+                    style={{ fontSize: 11, padding: '1px 6px', color: '#fca5a5' }}
+                  >
+                    删除
+                  </button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
-      <button onClick={restat} style={{ marginTop: 8 }}>重新枚举</button>
+      <button onClick={restat} style={{ marginTop: 8 }} disabled={pathBusy}>重新枚举</button>
     </div>
   );
 }

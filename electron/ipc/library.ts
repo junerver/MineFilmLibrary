@@ -31,6 +31,7 @@ export function registerLibraryIpc() {
     const args: any[] = [];
     if (!filter.include_deleted) where.push('is_deleted=0');
     if (filter.duplicate_codes_only) where.push('code_count > 1');
+    if (filter.favorites_only) where.push('is_favorite=1');
     if (filter.q) {
       where.push('(code LIKE ? OR title LIKE ?)');
       const q = `%${filter.q}%`;
@@ -153,5 +154,13 @@ export function registerLibraryIpc() {
     getDb().prepare('UPDATE films SET is_deleted=0, updated_at=? WHERE id=?').run(nowMs(), id);
     recomputeCodeCounts(getDb());
     return true;
+  });
+
+  // 切换收藏星标。favorite 为真 → 1，假 → 0。
+  ipcMain.handle('library:setFavorite', (_e, id: number, favorite: boolean) => {
+    const flag = favorite ? 1 : 0;
+    const info = getDb().prepare('UPDATE films SET is_favorite=?, updated_at=? WHERE id=?')
+      .run(flag, nowMs(), id);
+    return info.changes > 0;
   });
 }

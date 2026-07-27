@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS films (
   fs_mtime_ms INTEGER NOT NULL,
   is_deleted INTEGER NOT NULL DEFAULT 0,
   code_count INTEGER NOT NULL DEFAULT 0,
+  is_favorite INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (cover_blob_id) REFERENCES cover_blobs(id) ON DELETE SET NULL

@@ -9,10 +9,43 @@ import { useToast } from '../components/Toaster';
 // Resolve the IPC bridge live (see FilterBar for rationale).
 const mfl = (): MflApi => (window as any).mfl;
 
-const PAGE_SIZE = 1000;
+/** 影片库每页可选条数 */
+const PAGE_SIZE_OPTIONS = [100, 200, 300, 500] as const;
+type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
+const DEFAULT_PAGE_SIZE: PageSizeOption = 100;
 // 进详情前保存主内容区 scrollTop，返回时恢复（Layout 主区 id=mfl-main-scroll）。
 const LIST_SCROLL_KEY = 'mfl:libraryListScroll';
+// 最近一次影片库完整 query（含 search/filter/sort/page），侧栏点「影片库」或裸 /library 时复原。
+const LAST_QUERY_KEY = 'mfl:libraryLastQuery';
+// 用户偏好：无 URL page_size 时回落到 localStorage / 默认 100。
+const PAGE_SIZE_PREF_KEY = 'mfl:libraryPageSize';
 const SCROLL_RESTORE_MAX_FRAMES = 60;
+
+function isPageSizeOption(n: number): n is PageSizeOption {
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(n);
+}
+
+function readPreferredPageSize(): PageSizeOption {
+  try {
+    const raw = localStorage.getItem(PAGE_SIZE_PREF_KEY);
+    const n = raw != null ? Number(raw) : NaN;
+    if (Number.isFinite(n) && isPageSizeOption(n)) return n;
+  } catch { /* ignore */ }
+  return DEFAULT_PAGE_SIZE;
+}
+
+function savePreferredPageSize(n: PageSizeOption) {
+  try { localStorage.setItem(PAGE_SIZE_PREF_KEY, String(n)); } catch { /* ignore */ }
+}
+
+function parsePageSize(raw: string | null): PageSizeOption {
+  const n = raw != null ? Number(raw) : NaN;
+  if (Number.isFinite(n) && isPageSizeOption(n)) return n;
+  return readPreferredPageSize();
+}
+
+/** 跨 StrictMode 双挂载共享的待恢复 scrollY；undefined=尚未读 storage */
+let cachedPendingScroll: number | null | undefined;
 
 type SortBy = NonNullable<FilmFilter['sort_by']>;
 
@@ -39,9 +72,10 @@ function parseStrList(raw: string | null): string[] | undefined {
 
 function filterFromParams(sp: URLSearchParams): FilmFilter {
   const page = Math.max(1, Number(sp.get('page') || '1') || 1);
+  const pageSize = parsePageSize(sp.get('page_size'));
   return {
     page,
-    page_size: PAGE_SIZE,
+    page_size: pageSize,
     sort_by: parseSortBy(sp.get('sort_by')),
     sort_dir: parseSortDir(sp.get('sort_dir')),
     q: sp.get('q') ?? undefined,
@@ -52,6 +86,7 @@ function filterFromParams(sp: URLSearchParams): FilmFilter {
     locales: parseStrList(sp.get('locales')),
     statuses: parseStrList(sp.get('statuses')) as FilmFilter['statuses'],
     duplicate_codes_only: sp.get('duplicates') === '1' || undefined,
+    favorites_only: sp.get('favorites') === '1' || undefined,
   };
 }
 
@@ -59,6 +94,9 @@ function paramsFromFilter(f: FilmFilter): URLSearchParams {
   const next = new URLSearchParams();
   if (f.q) next.set('q', f.q);
   if (f.page && f.page !== 1) next.set('page', String(f.page));
+  // page_size 始终写入 URL，便于详情返回 / 侧栏复原时保持每页条数
+  const pageSize = f.page_size && isPageSizeOption(f.page_size) ? f.page_size : readPreferredPageSize();
+  next.set('page_size', String(pageSize));
   if (f.sort_by && f.sort_by !== 'updated_at') next.set('sort_by', f.sort_by);
   if (f.sort_dir) next.set('sort_dir', f.sort_dir);
   if (f.sort_by === 'updated_at' && f.sort_dir === 'desc') next.delete('sort_dir');
@@ -68,6 +106,7 @@ function paramsFromFilter(f: FilmFilter): URLSearchParams {
   if (f.locales?.length) next.set('locales', f.locales.join(','));
   if (f.statuses?.length) next.set('statuses', f.statuses.join(','));
   if (f.duplicate_codes_only) next.set('duplicates', '1');
+  if (f.favorites_only) next.set('favorites', '1');
   return next;
 }
 
@@ -75,20 +114,49 @@ function getMainScrollEl(): HTMLElement | null {
   return document.getElementById('mfl-main-scroll');
 }
 
-function readSavedListScroll(): number | null {
-  const raw = sessionStorage.getItem(LIST_SCROLL_KEY);
-  const value = raw == null ? 0 : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : null;
+function readPendingScroll(): number | null {
+  // 优先读 sessionStorage：测试与跨页返回都能拿到最新值；
+  // 模块缓存仅兜底 StrictMode 双挂载时 storage 已被清掉的窗口。
+  try {
+    const raw = sessionStorage.getItem(LIST_SCROLL_KEY);
+    const n = raw != null ? Number(raw) : NaN;
+    if (Number.isFinite(n) && n > 0) {
+      cachedPendingScroll = n;
+      return n;
+    }
+  } catch { /* ignore */ }
+  if (cachedPendingScroll !== undefined) return cachedPendingScroll;
+  cachedPendingScroll = null;
+  return null;
 }
 
-function saveListScroll(value: number) {
-  const normalized = Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
-  if (normalized > 0) sessionStorage.setItem(LIST_SCROLL_KEY, String(normalized));
-  else clearSavedListScroll();
+function saveListScroll(y: number) {
+  const v = Math.max(0, Math.round(y));
+  if (v > 0) sessionStorage.setItem(LIST_SCROLL_KEY, String(v));
+  else sessionStorage.removeItem(LIST_SCROLL_KEY);
+  cachedPendingScroll = v > 0 ? v : null;
 }
 
-function clearSavedListScroll() {
+function clearPendingScroll() {
   sessionStorage.removeItem(LIST_SCROLL_KEY);
+  cachedPendingScroll = null;
+}
+
+function saveLastLibraryQuery(sp: URLSearchParams) {
+  const s = sp.toString();
+  try {
+    if (s) sessionStorage.setItem(LAST_QUERY_KEY, s);
+    else sessionStorage.removeItem(LAST_QUERY_KEY);
+  } catch { /* ignore */ }
+}
+
+/** 侧栏/裸路径进入时，尝试恢复最近一次筛选 query。 */
+function readLastLibraryQuery(): string | null {
+  try {
+    return sessionStorage.getItem(LAST_QUERY_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export default function LibraryPage() {
@@ -106,17 +174,54 @@ export default function LibraryPage() {
   // 仅表示「本页刚点了启动」的短暂 loading；真正任务在主进程，切页不丢。
   const [startingBatch, setStartingBatch] = useState(false);
   // 恢复成功前一直保留 storage，避免 StrictMode 双挂载或布局尚未完成时丢失位置。
-  const pendingScrollRef = useRef<number | null>(readSavedListScroll());
+  const pendingScrollRef = useRef<number | null>(readPendingScroll());
+  // 恢复期间禁止 scroll 监听把 0 写回 storage，覆盖真正的待恢复值。
+  const suppressScrollSaveRef = useRef(false);
+  const restoreTriesRef = useRef(0);
+  // 仅对「空 query 首次进入」做一次 last-query 复原，避免清空筛选后被再次塞回。
+  const didHydrateQueryRef = useRef(false);
+
+  // 空 /library 时恢复最近筛选（侧栏 NavLink 会丢掉 search）。
+  useLayoutEffect(() => {
+    if (didHydrateQueryRef.current) return;
+    didHydrateQueryRef.current = true;
+    if (searchParams.toString()) {
+      saveLastLibraryQuery(searchParams);
+      return;
+    }
+    const last = readLastLibraryQuery();
+    if (!last) return;
+    setSearchParams(new URLSearchParams(last), { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  // 持续备份当前 query（含清空后的空串），供侧栏/裸路径回影片库时复原。
+  useEffect(() => {
+    saveLastLibraryQuery(searchParams);
+  }, [searchParams]);
+
+  const pageSize = (filter.page_size && isPageSizeOption(filter.page_size))
+    ? filter.page_size
+    : DEFAULT_PAGE_SIZE;
+
+  // 记住用户选的每页条数（无 URL 时的默认来源）。
+  useEffect(() => {
+    savePreferredPageSize(pageSize);
+  }, [pageSize]);
 
   const setFilter = (f: FilmFilter) => {
     const prev = filter;
+    const nextSize = (f.page_size && isPageSizeOption(f.page_size)) ? f.page_size : pageSize;
     const changed = f.q !== prev.q || f.actors !== prev.actors || f.genres !== prev.genres
       || f.tags !== prev.tags || f.locales !== prev.locales || f.statuses !== prev.statuses
       || f.include_deleted !== prev.include_deleted || f.duplicate_codes_only !== prev.duplicate_codes_only
-      || f.sort_by !== prev.sort_by || f.sort_dir !== prev.sort_dir;
-    const next: FilmFilter = changed ? { ...f, page: 1, page_size: PAGE_SIZE } : { ...f, page_size: PAGE_SIZE };
+      || f.favorites_only !== prev.favorites_only
+      || f.sort_by !== prev.sort_by || f.sort_dir !== prev.sort_dir
+      || nextSize !== pageSize;
+    const next: FilmFilter = changed
+      ? { ...f, page: 1, page_size: nextSize }
+      : { ...f, page_size: nextSize };
     setSearchParams(paramsFromFilter(next), { replace: true });
-    // 筛选/排序变化清空勾选，避免用户以为还在刮「当前可见」的一批。
+    // 筛选/排序/每页条数变化清空勾选，避免用户以为还在刮「当前可见」的一批。
     if (changed) setSelectedIds(new Set());
   };
 
@@ -128,26 +233,45 @@ export default function LibraryPage() {
       return;
     }
     setLoading(true);
-    api.library.list({ ...filter, page_size: PAGE_SIZE }).then(r => {
+    api.library.list({ ...filter, page_size: pageSize }).then(r => {
       if (!cancelled) { setRows(r.items); setTotal(r.total); }
     }).catch(e => toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' })).finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [filter]);
+  }, [filter, pageSize]);
+
+  // 列表滚动时持续写入 sessionStorage（与 ActorPage 一致）。
+  useEffect(() => {
+    const el = getMainScrollEl();
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (suppressScrollSaveRef.current) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (el.scrollHeight > el.clientHeight + 1) saveListScroll(el.scrollTop);
+      });
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, [rows.length, loading]);
 
   // rows 到位后等待主容器真正可滚动；只有实际恢复成功才清掉保存值。
   useLayoutEffect(() => {
     if (loading || rows.length === 0) return;
-    const target = pendingScrollRef.current ?? readSavedListScroll();
-    if (target == null) return;
+    const target = pendingScrollRef.current ?? readPendingScroll();
+    if (target == null || target <= 0) return;
     pendingScrollRef.current = target;
+    suppressScrollSaveRef.current = true;
 
     let cancelled = false;
     let frame = 0;
-    let attempts = 0;
 
-    const tryRestore = () => {
+    const tryRestore = (): boolean => {
       const el = getMainScrollEl();
       if (!el) return false;
       const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -158,16 +282,21 @@ export default function LibraryPage() {
       if (Math.abs(el.scrollTop - desired) > 2) return false;
 
       pendingScrollRef.current = null;
-      clearSavedListScroll();
+      clearPendingScroll();
+      restoreTriesRef.current = 0;
+      // 延迟解除 suppress，避免 restore 触发的 scroll 事件写 0
+      setTimeout(() => { suppressScrollSaveRef.current = false; }, 100);
       return true;
     };
 
     const tick = () => {
       if (cancelled || tryRestore()) return;
-      attempts += 1;
-      if (attempts >= SCROLL_RESTORE_MAX_FRAMES) {
+      restoreTriesRef.current += 1;
+      if (restoreTriesRef.current >= SCROLL_RESTORE_MAX_FRAMES) {
         pendingScrollRef.current = null;
-        clearSavedListScroll();
+        clearPendingScroll();
+        restoreTriesRef.current = 0;
+        suppressScrollSaveRef.current = false;
         return;
       }
       frame = requestAnimationFrame(tick);
@@ -183,11 +312,19 @@ export default function LibraryPage() {
   // 翻页时清空勾选（仅本页勾选语义更清晰）。
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [filter.page]);
+  }, [filter.page, pageSize]);
 
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const page = filter.page ?? 1;
-  const goto = (p: number) => setSearchParams(paramsFromFilter({ ...filter, page: p }), { replace: true });
+  const goto = (p: number) => setSearchParams(paramsFromFilter({ ...filter, page: p, page_size: pageSize }), { replace: true });
+
+  const onPageSizeChange = (next: number) => {
+    if (!isPageSizeOption(next) || next === pageSize) return;
+    savePreferredPageSize(next);
+    setSelectedIds(new Set());
+    // 改每页条数回到第 1 页，避免偏移到空页。
+    setSearchParams(paramsFromFilter({ ...filter, page: 1, page_size: next }), { replace: true });
+  };
 
   const onSortChange = (key: NonNullable<FilmFilter['sort_by']>) => {
     if (filter.sort_by === key) {
@@ -260,7 +397,7 @@ export default function LibraryPage() {
       );
       // 回到本页时若仍挂着，刷新列表
       try {
-        const r = await mfl().library.list({ ...filter, page_size: PAGE_SIZE });
+        const r = await mfl().library.list({ ...filter, page_size: pageSize });
         setRows(r.items);
         setTotal(r.total);
       } catch { /* ignore */ }
@@ -277,8 +414,15 @@ export default function LibraryPage() {
 
   return (
     <div>
-      <FilterBar value={{ ...filter, page_size: PAGE_SIZE }} onChange={setFilter} />
+      <FilterBar value={{ ...filter, page_size: pageSize }} onChange={setFilter} />
       <div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          aria-pressed={!!filter.favorites_only}
+          title="只显示已收藏的影片"
+          onClick={() => setFilter({ ...filter, favorites_only: !filter.favorites_only })}
+          style={filter.favorites_only ? { background: '#3a3200', color: '#e6b800' } : undefined}
+        >已收藏</button>
         <button
           type="button"
           aria-pressed={!!filter.duplicate_codes_only}
@@ -330,11 +474,25 @@ export default function LibraryPage() {
         selectedIds={selectedIds}
         onSelectionChange={setSelectedIds}
       />
-      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#aaa' }}>
+      <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#aaa', flexWrap: 'wrap' }}>
         <span>共 {total} 条</span>
         <span>第 {page} / {pageCount} 页</span>
-        <button disabled={page <= 1} onClick={() => goto(page - 1)}>上一页</button>
-        <button disabled={page >= pageCount} onClick={() => goto(page + 1)}>下一页</button>
+        <button type="button" disabled={page <= 1} onClick={() => goto(page - 1)}>上一页</button>
+        <button type="button" disabled={page >= pageCount} onClick={() => goto(page + 1)}>下一页</button>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8 }}>
+          <span>每页</span>
+          <select
+            aria-label="每页条数"
+            value={pageSize}
+            onChange={e => onPageSizeChange(Number(e.target.value))}
+            style={{ background: '#1e1e1e', color: '#e0e0e0', border: '1px solid #444', borderRadius: 4, padding: '2px 6px' }}
+          >
+            {PAGE_SIZE_OPTIONS.map(n => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <span>条</span>
+        </label>
       </div>
       {loading && <div style={{ padding: 8 }}>加载中…</div>}
     </div>

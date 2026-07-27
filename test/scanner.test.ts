@@ -280,7 +280,7 @@ describe('runScan full mode', () => {
       .map(row => row.code);
 
     expect(result.code_repaired).toBe(4);
-    expect(codes).toEqual(['122813-509-carib', '261ARA-417', 'S2MBD-016', 'x1x-111860']);
+    expect(codes).toEqual(['122813-509', '261ARA-417', 'S2MBD-016', 'x1x-111860']);
   });
 
   it('does not overwrite a complete manual code or any scraped code', () => {

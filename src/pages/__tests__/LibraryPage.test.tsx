@@ -8,18 +8,19 @@ const fakeRow = {
   id: 1, code: 'AAA-1', title: 'T1', is_deleted: 0, scan_status: 'parsed' as const,
   locale: null, parent_type: 'actor' as const, parent_dir_name: '0-J',
   raw_dir_name: 'AAA-1 T1', abs_path: '/x/AAA-1 T1', cover_path: null, cover_blob_id: null,
-  notes: null, fs_mtime_ms: 0, code_count: 1, created_at: 0, updated_at: 0,
+  notes: null, fs_mtime_ms: 0, code_count: 1, is_favorite: 0, created_at: 0, updated_at: 0,
 };
 
 const fakeApi = {
   library: {
-    list: vi.fn(async (_f: FilmFilter): Promise<ListResult<FilmRow>> => ({ items: [fakeRow], total: 1, page: 1, page_size: 1000 })),
+    list: vi.fn(async (_f: FilmFilter): Promise<ListResult<FilmRow>> => ({ items: [fakeRow], total: 1, page: 1, page_size: 100 })),
     get: vi.fn(async () => null),
     create: vi.fn(async () => 1),
     update: vi.fn(async () => true),
     softDelete: vi.fn(async () => true),
     hardDelete: vi.fn(async () => true),
     restore: vi.fn(async () => true),
+    setFavorite: vi.fn(async () => true),
   },
   actors: { list: vi.fn(async () => []) },
   genres: { list: vi.fn(async () => []), allTags: vi.fn(async () => []) },
@@ -29,6 +30,7 @@ beforeEach(() => {
   (window as any).mfl = fakeApi;
   fakeApi.library.list.mockClear();
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 describe('LibraryPage', () => {
@@ -64,6 +66,34 @@ describe('LibraryPage', () => {
     expect(button).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('filters favorites only via the toolbar chip', async () => {
+    render(<MemoryRouter><LibraryPage /></MemoryRouter>);
+    const button = await screen.findByRole('button', { name: '已收藏' });
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      const calls = fakeApi.library.list.mock.calls as [FilmFilter][];
+      expect(calls.some(([filter]) => filter.favorites_only === true)).toBe(true);
+    });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('changes page size via the pager select and reloads the list', async () => {
+    render(<MemoryRouter><LibraryPage /></MemoryRouter>);
+    const select = await screen.findByLabelText('每页条数');
+    expect(select).toHaveValue('100');
+
+    fireEvent.change(select, { target: { value: '200' } });
+
+    await waitFor(() => {
+      const calls = fakeApi.library.list.mock.calls as [FilmFilter][];
+      expect(calls.some(([filter]) => filter.page_size === 200 && (filter.page ?? 1) === 1)).toBe(true);
+    });
+    expect(select).toHaveValue('200');
+    expect(localStorage.getItem('mfl:libraryPageSize')).toBe('200');
+  });
+
   it('restores list scroll after the table becomes scrollable', async () => {
     let resolveList!: (result: ListResult<FilmRow>) => void;
     fakeApi.library.list.mockImplementationOnce(() => new Promise(resolve => {
@@ -94,7 +124,7 @@ describe('LibraryPage', () => {
     });
 
     await act(async () => {
-      resolveList({ items: [fakeRow], total: 1, page: 1, page_size: 1000 });
+      resolveList({ items: [fakeRow], total: 1, page: 1, page_size: 100 });
     });
     expect(await screen.findByText('AAA-1')).toBeInTheDocument();
     expect(scrollTop).toBe(0);

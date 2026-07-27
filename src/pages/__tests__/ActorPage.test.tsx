@@ -45,6 +45,7 @@ const localFilm: FilmRow = {
   fs_mtime_ms: 1,
   is_deleted: 0,
   code_count: 1,
+  is_favorite: 0,
   created_at: 1,
   updated_at: 1,
 };

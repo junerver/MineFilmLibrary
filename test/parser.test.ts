@@ -69,26 +69,106 @@ describe('parseFilmDirName', () => {
       'S2MBD-016',
       '波多野結衣臨場感溢出的濃厚SEX Encore Vol.16',
     ],
-    [
-      '122813-509-carib-C [FHD]半澤直美癡女10倍奉還辦公室OL',
-      '122813-509-carib',
-      '半澤直美癡女10倍奉還辦公室OL',
-    ],
-    [
-      '261ARA-417-C [FHD] 希望自己變得更變態的癡女美容師',
-      '261ARA-417',
-      '希望自己變得更變態的癡女美容師',
-    ],
-  ])('supports mixed and numeric-leading codes: %s', (raw, code, title) => {
-    expect(parseFilmDirName(raw)).toEqual({
-      code,
-      locale: 'C',
-      tags: ['FHD'],
-      title,
-      scan_status: 'parsed',
-    });
-  });
-  it('keeps a mixed x1x prefix and adjacent tags', () => {
+[
+	      '261ARA-417-C [FHD] 希望自己變得更變態的癡女美容師',
+	      '261ARA-417',
+	      '希望自己變得更變態的癡女美容師',
+	    ],
+	  ])('supports mixed and numeric-leading codes: %s', (raw, code, title) => {
+	    expect(parseFilmDirName(raw)).toEqual({
+	      code,
+	      locale: 'C',
+	      tags: ['FHD'],
+	      title,
+	      scan_status: 'parsed',
+	    });
+	  });
+	  // 加勒比 / 一本道 / Tokyo Hot：关键字触发专用编号规则，厂商标记丢弃。
+	  it.each([
+	    [
+	      '040415-846-carib-C',
+	      {
+	        code: '040415-846',
+	        locale: 'C' as const,
+	        tags: [] as string[],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      'Carib-071419-961-FHD',
+	      {
+	        code: '071419-961',
+	        locale: null,
+	        tags: ['FHD'],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      '122813-509-carib-C [FHD]半澤直美癡女10倍奉還辦公室OL',
+	      {
+	        code: '122813-509',
+	        locale: 'C' as const,
+	        tags: ['FHD'],
+	        title: '半澤直美癡女10倍奉還辦公室OL',
+	        scan_status: 'parsed' as const,
+	      },
+	    ],
+	    [
+	      '081315_133-1pon-C [FHD]',
+	      {
+	        code: '081315_133',
+	        locale: 'C' as const,
+	        tags: ['FHD'],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      '030621_001-1pon',
+	      {
+	        code: '030621_001',
+	        locale: null,
+	        tags: [] as string[],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      '1Pondo-123114_950-HD',
+	      {
+	        code: '123114_950',
+	        locale: null,
+	        tags: ['HD'],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      'Tokyo Hot N0917 [FHD][OL]',
+	      {
+	        code: 'n0917',
+	        locale: null,
+	        tags: ['FHD', 'OL'],
+	        title: null,
+	        scan_status: 'partial' as const,
+	      },
+	    ],
+	    [
+	      'Tokyo-Hot-n1234-C Title',
+	      {
+	        code: 'n1234',
+	        locale: 'C' as const,
+	        tags: [] as string[],
+	        title: 'Title',
+	        scan_status: 'parsed' as const,
+	      },
+	    ],
+	  ])('extracts vendor-specific codes: %s', (raw, expected) => {
+	    expect(parseFilmDirName(raw)).toEqual(expected);
+	  });
+	  it('keeps a mixed x1x prefix and adjacent tags', () => {
     expect(parseFilmDirName('x1x-111860 [FHD][无]')).toEqual({
       code: 'x1x-111860',
       locale: null,

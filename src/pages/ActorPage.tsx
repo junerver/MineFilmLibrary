@@ -113,6 +113,7 @@ export default function ActorPage() {
   const [mergeQuery, setMergeQuery] = useState('');
   const [mergeSuggestOpen, setMergeSuggestOpen] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   // 元数据表单首个输入框：打开编辑时主动 focus，避免偶发点不中/无焦点。
@@ -331,6 +332,28 @@ export default function ActorPage() {
       toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
     } finally {
       setMerging(false);
+    }
+  };
+
+  const deleteActor = async () => {
+    if (selected == null || !selectedActor) return;
+    const count = selectedActor.film_count ?? 0;
+    const msg = count > 0
+      ? `确定删除演员「${selectedActor.name}」？\n`
+        + `· 将从 ${count} 部影片中移除该演员（影片本身保留）\n`
+        + `· 其别名记录也会一并清除\n\n此操作不可撤销（可用整库备份恢复）。`
+      : `确定删除演员「${selectedActor.name}」？\n此操作不可撤销（可用整库备份恢复）。`;
+    if (!confirm(msg)) return;
+    setDeleting(true);
+    try {
+      await mfl().actors.delete(selected);
+      toast.push({ text: `已删除：${selectedActor.name}`, kind: 'success' });
+      setSelected(null);
+      reloadActors();
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -560,6 +583,23 @@ export default function ActorPage() {
                 title={selectedActor.javbus_url ? '从已配置的演员主页更新资料与最新作品' : '请先编辑元数据并配置 JavBus 主页'}
               >
                 {actorScraping ? '刮削中…' : '刮削演员主页'}
+              </button>
+              <button
+                type="button"
+                disabled={deleting || merging}
+                onClick={() => void deleteActor()}
+                title="删除该演员条目；若已关联影片，会从那些影片中移除该演员（影片保留）"
+                style={{
+                  marginLeft: 8,
+                  padding: '2px 8px',
+                  border: '1px solid #6a2a2a',
+                  borderRadius: 4,
+                  background: deleting ? '#2a1010' : '#3a1010',
+                  color: '#e08080',
+                  cursor: 'pointer',
+                }}
+              >
+                {deleting ? '删除中…' : '删除演员'}
               </button>
             </div>
 

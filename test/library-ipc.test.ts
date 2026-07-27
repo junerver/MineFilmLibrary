@@ -104,3 +104,41 @@ describe('library:list duplicate code filter', () => {
     expect(result.items.map(film => film.code?.toLowerCase())).toEqual(['abc-001', 'abc-001']);
   });
 });
+
+describe('library favorites', () => {
+  it('filters favorites_only and setFavorite toggles is_favorite', () => {
+    addFilm('FAV-001');
+    addFilm('PLAIN-002');
+    const plain = db.prepare('SELECT id FROM films WHERE code=?').get('PLAIN-002') as { id: number };
+    const fav = db.prepare('SELECT id FROM films WHERE code=?').get('FAV-001') as { id: number };
+
+    const setFavorite = mocks.handlers.get('library:setFavorite');
+    const list = mocks.handlers.get('library:list');
+    expect(setFavorite).toBeDefined();
+    expect(list).toBeDefined();
+
+    expect(setFavorite?.({}, fav.id, true)).toBe(true);
+    const row = db.prepare('SELECT is_favorite FROM films WHERE id=?').get(fav.id) as { is_favorite: number };
+    expect(row.is_favorite).toBe(1);
+
+    const onlyFav = list?.({}, {
+      favorites_only: true,
+      page: 1,
+      page_size: 50,
+      sort_by: 'code',
+      sort_dir: 'asc',
+    } satisfies FilmFilter) as ListResult<FilmRow>;
+    expect(onlyFav.total).toBe(1);
+    expect(onlyFav.items.map(f => f.code)).toEqual(['FAV-001']);
+    expect(onlyFav.items[0].is_favorite).toBe(1);
+
+    expect(setFavorite?.({}, fav.id, false)).toBe(true);
+    expect(setFavorite?.({}, plain.id, false)).toBe(true);
+    const empty = list?.({}, {
+      favorites_only: true,
+      page: 1,
+      page_size: 50,
+    } satisfies FilmFilter) as ListResult<FilmRow>;
+    expect(empty.total).toBe(0);
+  });
+});

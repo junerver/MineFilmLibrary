@@ -20,6 +20,8 @@ export interface FilmRow {
   fs_mtime_ms: number;
   is_deleted: number;
   code_count: number;
+  /** 1 = 已收藏，0 = 普通 */
+  is_favorite: number;
   /** 最近一次成功刮削时间戳（ms），null/undefined 表示未刮削 */
   scraped_at?: number | null;
   // 列表场景下附带：本片所有演员的名字，已用"、"拼好。详情页走 FilmDetail 自带 actors 数组。
@@ -80,6 +82,8 @@ export interface FilmFilter {
   root_ids?: number[];
   include_deleted?: boolean;
   duplicate_codes_only?: boolean;
+  /** 仅显示已收藏影片 */
+  favorites_only?: boolean;
   page?: number;
   page_size?: number;
   sort_by?: 'code' | 'title' | 'updated_at' | 'fs_mtime_ms' | 'actors' | 'scraped_at';

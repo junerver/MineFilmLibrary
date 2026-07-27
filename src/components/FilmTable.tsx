@@ -201,6 +201,9 @@ export default function FilmTable({
       case 'code':
         return (
           <>
+            {r.is_favorite === 1 && (
+              <span title="已收藏" style={{ marginRight: 4, color: '#e6b800' }}>★</span>
+            )}
             {r.code ? r.code.toUpperCase() : ''}
             {(r.code_count ?? 0) > 1 && (
               <span title={`该编号存在 ${r.code_count} 份`} style={{ marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 11, background: '#7a3a00', color: '#ffd0a0', whiteSpace: 'nowrap' }}>×{r.code_count}</span>

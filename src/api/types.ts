@@ -7,6 +7,8 @@ export interface FilmRow {
   parent_dir_name: string; parent_type: ParentType; locale: Locale; cover_path: string | null;
   cover_blob_id: number | null; notes: string | null; scan_status: ScanStatus;
   fs_mtime_ms: number; is_deleted: number; code_count: number;
+  /** 1 = 已收藏，0 = 普通 */
+  is_favorite: number;
   scraped_at?: number | null;
   // 列表场景：演员名用"、"拼接。详情页用 FilmDetail.actors。
   actors_names?: string;
@@ -68,6 +70,8 @@ export interface FilmFilter {
   q?: string; actors?: number[]; genres?: number[]; tags?: string[]; locales?: string[];
   statuses?: ScanStatus[]; root_ids?: number[]; include_deleted?: boolean;
   duplicate_codes_only?: boolean;
+  /** 仅显示已收藏影片 */
+  favorites_only?: boolean;
   page?: number; page_size?: number;
   sort_by?: 'code' | 'title' | 'updated_at' | 'fs_mtime_ms' | 'actors' | 'scraped_at';
   sort_dir?: 'asc' | 'desc';
@@ -79,6 +83,9 @@ export interface FilmPathStatus {
   valid: boolean;
   reason: 'ok' | 'film_not_found' | 'missing' | 'not_directory' | 'unreadable';
 }
+export type FileOpResult =
+  | { ok: true; filmAbsPath?: string; parentAbsPath?: string; updatedFilms?: number; updatedFiles?: number }
+  | { ok: false; error: string };
 export interface ScanRootRow { id: number; path: string; label: string | null; last_full_scan_at: number | null; last_incremental_scan_at: number | null; enabled: number; }
 export interface ScanRunRow { id: number; root_id: number; mode: 'full'|'incremental'; started_at: number; finished_at: number|null; dir_seen: number; dir_added: number; dir_updated: number; dir_removed: number; status: 'running'|'done'|'error'; error_message: string|null; }
 export interface CoverResult { kind: 'blob' | 'file'; mime: string; base64: string; }

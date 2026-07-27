@@ -13,6 +13,7 @@ export interface MflApi {
     softDelete(id: number): Promise<boolean>;
     hardDelete(id: number): Promise<boolean>;
     restore(id: number): Promise<boolean>;
+    setFavorite(id: number, favorite: boolean): Promise<boolean>;
   };
   actors: {
     list(): Promise<T.ActorRow[]>;
@@ -52,6 +53,9 @@ export interface MflApi {
     pathStatus(id: number): Promise<T.FilmPathStatus>;
     openInFolder(id: number): Promise<boolean>;
     restat(id: number): Promise<boolean>;
+    renameFilmDir(id: number, newName: string): Promise<T.FileOpResult>;
+    renameParentDir(id: number, newName: string): Promise<T.FileOpResult>;
+    deleteFile(filmId: number, fileId: number): Promise<T.FileOpResult>;
   };
   cover: {
     getCover(id: number, opts?: { display?: boolean; rel_path?: string }): Promise<T.CoverResult | null>;

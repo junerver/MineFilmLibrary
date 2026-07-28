@@ -5,8 +5,7 @@ import { useBatchScrapeProgress } from '../hooks/useBatchScrapeProgress';
 const NAV: { to: string; label: string }[] = [
   { to: '/library', label: '影片库' },
   { to: '/actors', label: '演员' },
-  { to: '/scan', label: '扫描' },
-  { to: '/trash', label: '回收站' },
+  // 扫描 / 回收站已并入「设置」内 Tab（/settings?tab=…）
   { to: '/settings', label: '设置' },
 ];
 

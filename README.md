@@ -12,11 +12,10 @@
 
 | 模块 | 能力 |
 |------|------|
-| 扫描 | 全量 / 增量扫描；支持「演员父目录 → 影片」两级结构与平铺根 |
 | 影片库 | 搜索、筛选、分页、编号/演员排序、批量 JavBus 刮削 |
 | 详情 | 编辑元数据、多演员、同编号多路径、JavBus 单片刮削 |
 | 演员 | 元数据/别名、列表搜索、滚动位置保持 |
-| 设置 | 解析策略、JavBus 站点、导出/导入 SQLite、打开日志目录 |
+| 设置 | 分 Tab：扫描（根目录/历史/解析策略）、回收站、隐私、JavBus 刮削、数据备份 |
 
 ---
 
@@ -104,13 +103,13 @@ path.join(app.getPath('userData'), 'minefilm.sqlite')
 ### 方式一：应用内导出 / 导入（推荐）
 
 1. **原电脑**  
-   - 打开 **设置**  
+   - 打开 **设置 → 数据**  
    - **导出 SQLite 整库** → 保存为例如 `minefilm-backup.sqlite`  
    - 将文件拷到 U 盘/网盘  
 
 2. **新电脑**  
    - 安装/运行同一版本的 MineFilmLibrary  
-   - **设置 → 从 SQLite 导入** → 选择备份文件  
+   - **设置 → 数据 → 从 SQLite 导入** → 选择备份文件  
    - 导入前会自动把当前库备份为 `minefilm.sqlite.preimport.bak`  
 
 对应 IPC：`export:sqlite`（`better-sqlite3` 的 `backup`）、`import:sqlite`。
@@ -151,8 +150,8 @@ path.join(app.getPath('userData'), 'minefilm.sqlite')
 
 - [ ] 新电脑安装相同或更新版本（库会自动跑 schema 迁移）  
 - [ ] 已导入 SQLite 或覆盖 `minefilm.sqlite`  
-- [ ] 影片文件盘符若变化：在 **扫描** 中重新添加根目录并扫描  
-- [ ] （可选）设置里重新配置 **JavBus 站点地址**  
+- [ ] 影片文件盘符若变化：在 **设置 → 扫描** 中重新添加根目录并扫描  
+- [ ] （可选）**设置 → 刮削** 重新配置 **JavBus 站点地址**  
 - [ ] （可选）复制 `logs/` 便于对照历史刮削日志  
 
 ---
@@ -245,7 +244,7 @@ MineFilmLibrary/
 %AppData%\Roaming\mine-film-library\logs\mfl-YYYY-MM-DD.log
 ```
 
-应用内：**设置 → 打开日志目录 / 显示日志路径**。
+应用内：**设置 → 刮削 → 打开日志目录 / 显示日志路径**。
 
 ---
 

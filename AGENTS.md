@@ -52,11 +52,13 @@ electron/                 # Main process (CommonJS via tsc → dist-electron/)
   util/                   # types, logger
 src/                      # Renderer (Vite + React)
   api/                    # MflApi types + thin window.mfl access
-  pages/                  # Route screens
+  pages/                  # Route screens（设置含 settings/* 子面板）
   components/             # FilmTable, FilterBar, CoverGuard, Layout, Toaster
   hooks/                  # Scan/batch progress, etc.
 test/                     # vitest (Node env for DB/scanner; jsdom for React)
 ```
+
+**Sidebar nav:** 影片库 / 演员 / 设置. Scan and trash live under **设置** tabs (`/settings?tab=scan|trash|privacy|scrape|data`); `/scan` and `/trash` redirect for bookmarks. Global scan/batch progress bars stay in `Layout`.
 
 **IPC surface:** All renderer ↔ main traffic goes through `window.mfl` (preload). Prefer live `const mfl = () => (window as any).mfl` (or typed helper) in components so tests can stub per case; avoid binding `api` once at module load when testability matters.
 
@@ -201,7 +203,7 @@ Before claiming done:
 | Library list/sort/filter | `electron/ipc/library.ts`, `src/pages/LibraryPage.tsx` |
 | Cover IPC | `electron/ipc/cover.ts`, `src/components/CoverGuard.tsx` |
 | Scrape | `electron/ipc/scrape.ts`, `electron/scraper/javbus.ts` |
-| Settings | `electron/ipc/settings.ts`, `src/pages/SettingsPage.tsx` |
+| Settings (tabs: scan/trash/privacy/scrape/data) | `electron/ipc/settings.ts`, `src/pages/SettingsPage.tsx`, `src/pages/settings/*` |
 | Global progress bars | `src/components/Layout.tsx` + scan/batch hooks |
 
 When unsure, prefer matching existing patterns in these files over introducing parallel abstractions.

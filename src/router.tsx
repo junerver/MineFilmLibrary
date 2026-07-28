@@ -4,8 +4,6 @@ import { Toaster } from './components/Toaster';
 import LibraryPage from './pages/LibraryPage';
 import FilmDetailPage from './pages/FilmDetailPage';
 import ActorPage from './pages/ActorPage';
-import ScanPage from './pages/ScanPage';
-import TrashPage from './pages/TrashPage';
 import SettingsPage from './pages/SettingsPage';
 
 export default function Router() {
@@ -17,8 +15,9 @@ export default function Router() {
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/film/:id" element={<FilmDetailPage />} />
           <Route path="/actors" element={<ActorPage />} />
-          <Route path="/scan" element={<ScanPage />} />
-          <Route path="/trash" element={<TrashPage />} />
+          {/* 旧独立页入口：兼容书签 / 外链 */}
+          <Route path="/scan" element={<Navigate to="/settings?tab=scan" replace />} />
+          <Route path="/trash" element={<Navigate to="/settings?tab=trash" replace />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

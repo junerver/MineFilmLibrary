@@ -23,6 +23,7 @@ const actor: ActorRow = {
   javbus_data_json: null,
   javbus_scraped_at: 1,
   is_favorite: 0,
+  avatar_url: null,
   film_count: 1,
   aliases: [],
   created_at: 1,
@@ -99,6 +100,9 @@ beforeEach(() => {
       addAlias: vi.fn(async () => true),
       removeAlias: vi.fn(async () => true),
       merge: vi.fn(async () => true),
+      fillFromBuiltin: vi.fn(async () => false),
+      lookupBuiltin: vi.fn(async () => null),
+      searchBuiltin: vi.fn(async () => []),
     },
     settings: { get: vi.fn(async () => ({ privacy_mode: '0' })) },
   };

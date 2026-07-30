@@ -61,10 +61,19 @@ export interface ActorRow {
   javbus_scraped_at: number | null;
   /** 1 = 收藏置顶，0 = 普通 */
   is_favorite: number;
+  /** 内置库或手动填写的头像 URL（远程） */
+  avatar_url: string | null;
   film_count: number;
   aliases: string[];
   created_at: number;
   updated_at: number;
+}
+
+/** 内置 actresses_raw.json 查询结果 */
+export interface ActressLookupResult {
+  url: string;
+  avatar: string;
+  name: string;
 }
 export interface FilmFilter {
   q?: string; actors?: number[]; genres?: number[]; tags?: string[]; locales?: string[];

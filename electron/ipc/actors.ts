@@ -1,8 +1,17 @@
 import { ipcMain, shell } from 'electron';
 import { getDb } from '../db';
 import { nowMs } from '../db/dao';
-import { addActorAlias, listActorAliases, removeActorAlias, mergeActors, resolveActorIdByName } from '../db/queries';
+import {
+  addActorAlias,
+  listActorAliases,
+  removeActorAlias,
+  mergeActors,
+  resolveActorIdByName,
+  applyBuiltinActressToActor,
+  scheduleBuiltinActorFill,
+} from '../db/queries';
 import { normalizeActorPageUrl, scrapeJavbusActorPage } from '../scraper/javbus';
+import { lookupActressByCandidates, searchActress } from '../data/actorLookup';
 import type { ActorRow } from '../util/types';
 
 export function registerActorIpc() {
@@ -12,7 +21,7 @@ export function registerActorIpc() {
       SELECT a.id, a.name, a.raw_dir_name, a.category, a.notes,
         a.birthday, a.age, a.height, a.cup, a.bust, a.waist, a.hips, a.measurements, a.hobby,
         a.javbus_url, NULL AS javbus_data_json, a.javbus_scraped_at,
-        a.is_favorite, a.created_at, a.updated_at, COUNT(fa.film_id) film_count
+        a.is_favorite, a.avatar_url, a.created_at, a.updated_at, COUNT(fa.film_id) film_count
       FROM actors a
       LEFT JOIN film_actors fa ON fa.actor_id=a.id
       GROUP BY a.id
@@ -29,16 +38,25 @@ export function registerActorIpc() {
     for (const r of rows) r.aliases = byActor.get(r.id) ?? [];
     return rows;
   });
+
+  // 立即入库返回 id；主页/头像由 scheduleBuiltinActorFill 异步静默补全，不阻塞 UI。
   ipcMain.handle('actors:create', (_e, name: string, rawDirName?: string, category?: string, notes?: string) => {
     const now = nowMs();
-    const r = getDb().prepare('INSERT INTO actors(name, raw_dir_name, category, notes, created_at, updated_at) VALUES(?,?,?,?,?,?)').run(name, rawDirName ?? null, category ?? null, notes ?? null, now, now);
-    return Number(r.lastInsertRowid);
+    const db = getDb();
+    const r = db.prepare(
+      'INSERT INTO actors(name, raw_dir_name, category, notes, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+    ).run(name, rawDirName ?? null, category ?? null, notes ?? null, now, now);
+    const id = Number(r.lastInsertRowid);
+    scheduleBuiltinActorFill(db, id);
+    return id;
   });
+
   ipcMain.handle('actors:update', (_e, id: number, patch: {
     name?: string;
     category?: string | null;
     notes?: string | null;
     javbus_url?: string | null;
+    avatar_url?: string | null;
     birthday?: string | null;
     age?: string | null;
     height?: string | null;
@@ -53,6 +71,7 @@ export function registerActorIpc() {
     if (patch.name !== undefined) { sets.push('name=?'); args.push(patch.name); }
     if (patch.category !== undefined) { sets.push('category=?'); args.push(patch.category); }
     if (patch.notes !== undefined) { sets.push('notes=?'); args.push(patch.notes); }
+    if (patch.avatar_url !== undefined) { sets.push('avatar_url=?'); args.push(patch.avatar_url?.trim() || null); }
     for (const key of ['birthday', 'age', 'height', 'cup', 'bust', 'waist', 'hips', 'measurements', 'hobby'] as const) {
       if (patch[key] !== undefined) { sets.push(`${key}=?`); args.push(patch[key]); }
     }
@@ -64,8 +83,11 @@ export function registerActorIpc() {
     if (!sets.length) return false;
     sets.push('updated_at=?'); args.push(nowMs()); args.push(id);
     getDb().prepare(`UPDATE actors SET ${sets.join(',')} WHERE id=?`).run(...args);
+    // 改名后可能命中内置库；异步补全空字段
+    if (patch.name !== undefined) scheduleBuiltinActorFill(getDb(), id);
     return true;
   });
+
   ipcMain.handle('actors:delete', (_e, id: number) => {
     getDb().prepare('DELETE FROM actors WHERE id=?').run(id);
     return true;
@@ -157,6 +179,30 @@ export function registerActorIpc() {
     ).all(like, like) as { id: number; name: string }[];
   });
 
+  /**
+   * 查询内置演员库（actresses_raw.json）。
+   * - 仅 name：精确匹配
+   * - 额外 candidates：正式名 + 别名任一命中
+   * 纯内存查找，可在 UI 编辑时预填，但不替代后台静默写入。
+   */
+  ipcMain.handle('actors:lookupBuiltin', (_e, name: string, extraCandidates?: string[]) => {
+    const candidates = [name, ...(extraCandidates ?? [])];
+    return lookupActressByCandidates(candidates);
+  });
+
+  /** 内置库模糊搜索（可选自动补全）。 */
+  ipcMain.handle('actors:searchBuiltin', (_e, term: string, limit?: number) => {
+    return searchActress(term, limit ?? 10);
+  });
+
+  /**
+   * 对指定演员立即执行一次内置库补全（仍只填空字段）。
+   * 供前端「补全主页」或打开详情时对旧数据补漏；返回是否写库。
+   */
+  ipcMain.handle('actors:fillFromBuiltin', (_e, actorId: number) => {
+    return applyBuiltinActressToActor(getDb(), actorId);
+  });
+
   // —— 别名 + 合并 ——
   ipcMain.handle('actors:addAlias', (_e, actorId: number, alias: string) => {
     return addActorAlias(getDb(), actorId, alias);
@@ -169,6 +215,8 @@ export function registerActorIpc() {
   });
   ipcMain.handle('actors:merge', (_e, fromId: number, toId: number) => {
     mergeActors(getDb(), fromId, toId);
+    // 合并后目标可能多了能命中内置库的别名
+    scheduleBuiltinActorFill(getDb(), toId);
     return true;
   });
 }

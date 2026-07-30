@@ -19,7 +19,7 @@ export interface MflApi {
     list(): Promise<T.ActorRow[]>;
     create(name: string, raw?: string, cat?: string, notes?: string): Promise<number>;
     update(id: number, patch: Partial<Pick<T.ActorRow,
-      'name' | 'category' | 'notes' | 'javbus_url' | 'birthday' | 'age' | 'height'
+      'name' | 'category' | 'notes' | 'javbus_url' | 'avatar_url' | 'birthday' | 'age' | 'height'
       | 'cup' | 'bust' | 'waist' | 'hips' | 'measurements' | 'hobby'>>): Promise<boolean>;
     delete(id: number): Promise<boolean>;
     setFavorite(id: number, favorite: boolean): Promise<boolean>;
@@ -28,6 +28,11 @@ export interface MflApi {
     scrapeJavbus(id: number): Promise<T.ActorJavbusData & { scrapedAt: number }>;
     openExternal(url: string): Promise<boolean>;
     quickFind(q: string): Promise<{ id: number; name: string }[]>;
+    /** 内置库精确/别名候选匹配 */
+    lookupBuiltin(name: string, extraCandidates?: string[]): Promise<T.ActressLookupResult | null>;
+    searchBuiltin(term: string, limit?: number): Promise<T.ActressLookupResult[]>;
+    /** 对已有演员静默补全空主页/头像，返回是否写库 */
+    fillFromBuiltin(id: number): Promise<boolean>;
     listAliases(id: number): Promise<string[]>;
     addAlias(id: number, alias: string): Promise<boolean>;
     removeAlias(alias: string): Promise<boolean>;

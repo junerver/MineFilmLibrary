@@ -11,6 +11,5 @@ release/
 actresses/__pycache__/
 actresses/avators/
 actresses/actresses.csv
-actresses/actresses_raw.json
 /tmp/
 nul

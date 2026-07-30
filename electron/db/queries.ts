@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import path from 'node:path';
 import { nowMs, tx } from './dao';
+import { lookupActressByCandidates } from '../data/actorLookup';
 
 /**
  * 解析演员名 → canonical actor_id（不新建）。
@@ -36,6 +37,8 @@ export function resolveActorIdByName(db: Database.Database, rawName: string): nu
  *   2) 否则 INSERT 新演员。
  * 不主动把 rawDirName 写入 aliases——别名只能由用户在 UI 显式添加。
  * 命中别名时不覆盖 canonical 的 raw_dir_name（避免别名字符串污染目录字段）。
+ *
+ * 新建演员后：异步从内置 actresses_raw.json 静默补全 javbus_url / avatar_url（不阻塞调用方）。
  */
 export function upsertActorByName(db: Database.Database, name: string, rawDirName: string): number {
   const now = nowMs();
@@ -52,12 +55,55 @@ export function upsertActorByName(db: Database.Database, name: string, rawDirNam
     } else {
       db.prepare('UPDATE actors SET updated_at=? WHERE id=?').run(now, resolved);
     }
+    // 已有记录若缺主页/头像，也静默补一次（别名可能后来才匹配到内置库）
+    scheduleBuiltinActorFill(db, resolved);
     return resolved;
   }
 
   const r = db.prepare('INSERT INTO actors(name, raw_dir_name, created_at, updated_at) VALUES(?,?,?,?)')
     .run(trimmed, rawDirName || trimmed, now, now);
-  return Number(r.lastInsertRowid);
+  const id = Number(r.lastInsertRowid);
+  scheduleBuiltinActorFill(db, id);
+  return id;
+}
+
+/**
+ * 用正式名 + 别名在内置库中查找，仅填充当前为空的 javbus_url / avatar_url。
+ * 已有用户配置的主页不覆盖；已有头像不覆盖。
+ * 返回是否写库。
+ */
+export function applyBuiltinActressToActor(db: Database.Database, actorId: number): boolean {
+  const row = db.prepare(
+    'SELECT id, name, javbus_url, avatar_url FROM actors WHERE id=?',
+  ).get(actorId) as { id: number; name: string; javbus_url: string | null; avatar_url: string | null } | undefined;
+  if (!row) return false;
+
+  // 两项都已有则跳过
+  if (row.javbus_url?.trim() && row.avatar_url?.trim()) return false;
+
+  const aliases = listActorAliases(db, actorId);
+  const hit = lookupActressByCandidates([row.name, ...aliases]);
+  if (!hit) return false;
+
+  const nextUrl = row.javbus_url?.trim() ? row.javbus_url : (hit.url || null);
+  const nextAvatar = row.avatar_url?.trim() ? row.avatar_url : (hit.avatar || null);
+  if (nextUrl === row.javbus_url && nextAvatar === row.avatar_url) return false;
+
+  db.prepare(
+    'UPDATE actors SET javbus_url=?, avatar_url=?, updated_at=? WHERE id=?',
+  ).run(nextUrl, nextAvatar, nowMs(), actorId);
+  return true;
+}
+
+/** 异步静默补全，不阻塞扫描/创建 IPC。 */
+export function scheduleBuiltinActorFill(db: Database.Database, actorId: number): void {
+  setImmediate(() => {
+    try {
+      applyBuiltinActressToActor(db, actorId);
+    } catch {
+      // 静默失败
+    }
+  });
 }
 
 /** 添加别名；若 alias 已被占用（指向别人或自己），返回 false。 */
@@ -66,6 +112,10 @@ export function addActorAlias(db: Database.Database, actorId: number, alias: str
   if (!trimmed) return false;
   // actor_aliases.alias 作 PK，INSERT OR IGNORE 在冲突时静默不插；用 changes 判定是否成功。
   const info = db.prepare('INSERT OR IGNORE INTO actor_aliases(alias, actor_id) VALUES(?,?)').run(trimmed, actorId);
+  if (info.changes > 0) {
+    // 新别名可能命中内置库中的名称，静默补全主页/头像
+    scheduleBuiltinActorFill(db, actorId);
+  }
   return info.changes > 0;
 }
 

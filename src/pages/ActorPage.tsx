@@ -271,6 +271,14 @@ export default function ActorPage() {
     mfl().actors.getJavbusData(selected).then((data: ActorJavbusData | null) => {
       if (!cancelled) setActorJavbusData(data);
     }).catch(() => {});
+    // 旧数据缺主页：后台静默用内置库补全，不阻塞其它操作。
+    const row = actors.find(a => a.id === selected);
+    const needFill = row && !row.javbus_url?.trim();
+    if (needFill && typeof mfl().actors.fillFromBuiltin === 'function') {
+      mfl().actors.fillFromBuiltin(selected).then((changed: boolean) => {
+        if (!cancelled && changed) reloadActors();
+      }).catch(() => {});
+    }
     return () => { cancelled = true; };
   }, [selected]);
 
@@ -640,7 +648,7 @@ export default function ActorPage() {
                     type="url"
                     value={metaForm.javbus_url}
                     onChange={e => setMetaForm(f => ({ ...f, javbus_url: e.target.value }))}
-                    placeholder="例如：已配置站点/star/演员ID"
+                    placeholder="例如：已配置站点/star/演员ID（新建时可由内置库自动填充）"
                     style={{ background: '#2a2a2a', color: '#fff', border: '1px solid #444', borderRadius: 4, padding: 4 }}
                   />
                 </label>
@@ -695,7 +703,29 @@ export default function ActorPage() {
                   <ReadField k="臀围" v={selectedActor.hips} />
                   <ReadField k="三围" v={selectedActor.measurements} />
                   <ReadField k="爱好" v={selectedActor.hobby} />
-                  <ReadField k="JavBus 主页" v={selectedActor.javbus_url} />
+                  <div>
+                    <span style={{ color: '#999', marginRight: 8 }}>JavBus 主页:</span>
+                    {selectedActor.javbus_url ? (
+                      <button
+                        type="button"
+                        onClick={() => void openActorWork(selectedActor.javbus_url!)}
+                        title="用系统浏览器打开"
+                        style={{
+                          background: 'transparent',
+                          border: 0,
+                          color: '#9fc4ff',
+                          cursor: 'pointer',
+                          padding: 0,
+                          textAlign: 'left',
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {selectedActor.javbus_url}
+                      </button>
+                    ) : (
+                      <span style={{ color: '#666' }}>—</span>
+                    )}
+                  </div>
                   <ReadField
                     k="主页刮削时间"
                     v={selectedActor.javbus_scraped_at ? new Date(selectedActor.javbus_scraped_at).toLocaleString() : null}

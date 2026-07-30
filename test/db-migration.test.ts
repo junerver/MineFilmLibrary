@@ -66,10 +66,10 @@ describe('db migration 0001', () => {
     openDbForTestTracked(dbPath);
     const db = new Database(dbPath);
     openedDbs.push(db);
-    // openDbForTest 跑完整条迁移链，所以版本落在最高 8。
+    // openDbForTest 跑完整条迁移链，所以版本落在最高 10。
     // 重开一次（这里用裸 Database 只读不跑迁移）也仍是 8，保证迁移不会回退版本。
     const row = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(row.version).toBe(8);
+    expect(row.version).toBe(10);
   });
 
   it('foreign keys enforce cascade', () => {
@@ -98,27 +98,27 @@ describe('db migration 0002', () => {
       .run('d', '/x/d', 'p', 'unknown', now, now, now);
     const f = db.prepare('SELECT code_count FROM films WHERE id=1').get() as { code_count: number };
     expect(f.code_count).toBe(0);
-    // schema_version 在 openDbForTest 跑完整条迁移链后应停在最新 8。
+    // schema_version 在 openDbForTest 跑完整条迁移链后应停在最新 10。
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
   });
 
-  it('is idempotent — re-open keeps version 8 (full migration chain)', () => {
+  it('is idempotent — re-open keeps version 10 (full migration chain)', () => {
     openDbForTestTracked(dbPath);
     const db = openDbForTestTracked(dbPath);
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    // 重开跑完整链，最新版本应停在 8。
-    expect(v.version).toBe(8);
+    // 重开跑完整链，最新版本应停在 10。
+    expect(v.version).toBe(10);
   });
 });
 
 describe('db migration 0003', () => {
-  it('adds actors.notes column + keeps schema_version at 8', () => {
+  it('adds actors.notes column + keeps schema_version at 10', () => {
     const db = openDbForTestTracked(dbPath);
     const cols = db.prepare('PRAGMA table_info(actors)').all() as { name: string }[];
     expect(cols.map(c => c.name)).toContain('notes');
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
     // 默认 NULL，不破坏现有行。
     const now = Date.now();
     db.prepare('INSERT INTO actors(name, raw_dir_name, created_at, updated_at) VALUES(?,?,?,?)').run('X', '0-X', now, now);
@@ -133,7 +133,7 @@ describe('db migration 0005', () => {
     const cols = db.prepare('PRAGMA table_info(actors)').all() as { name: string }[];
     expect(cols.map(c => c.name)).toEqual(expect.arrayContaining(['javbus_url', 'javbus_data_json', 'javbus_scraped_at']));
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
   });
 });
 
@@ -146,7 +146,7 @@ describe('db migration 0006', () => {
     ]));
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
     // openDbForTest 跑完全部迁移；最新版本为 8
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
   });
 });
 
@@ -157,7 +157,7 @@ describe('db migration 0007', () => {
     expect(cols.map(c => c.name)).toContain('is_favorite');
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
     // openDbForTest 跑完全部迁移；最新版本为 8
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
     const now = Date.now();
     db.prepare('INSERT INTO actors(name, raw_dir_name, created_at, updated_at) VALUES(?,?,?,?)')
       .run('FavActor', '0-FavActor', now, now);
@@ -167,12 +167,12 @@ describe('db migration 0007', () => {
 });
 
 describe('db migration 0008', () => {
-  it('adds films.is_favorite column default 0 + schema_version 8', () => {
+  it('adds films.is_favorite column default 0 + schema_version 10', () => {
     const db = openDbForTestTracked(dbPath);
     const cols = db.prepare('PRAGMA table_info(films)').all() as { name: string }[];
     expect(cols.map(c => c.name)).toContain('is_favorite');
     const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(v.version).toBe(8);
+    expect(v.version).toBe(10);
     const now = Date.now();
     db.prepare(`INSERT INTO films(
       code, title, raw_dir_name, abs_path, parent_dir_name, scan_status,
@@ -182,5 +182,15 @@ describe('db migration 0008', () => {
     );
     const f = db.prepare('SELECT is_favorite FROM films WHERE code=?').get('FAV-001') as { is_favorite: number };
     expect(f.is_favorite).toBe(0);
+  });
+});
+
+describe('db migration 0010', () => {
+  it('adds actors.avatar_url column', () => {
+    const db = openDbForTestTracked(dbPath);
+    const cols = db.prepare('PRAGMA table_info(actors)').all() as { name: string }[];
+    expect(cols.map(c => c.name)).toContain('avatar_url');
+    const v = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    expect(v.version).toBe(10);
   });
 });

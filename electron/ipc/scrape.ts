@@ -261,6 +261,9 @@ export async function scrapeOneFilm(filmId: number) {
   const genreIds: number[] = [];
   let tags: string[] = [];
   let newNotes: string | null = film.notes ?? null;
+  // 制作商/发行商：受 meta 开关控制（与演员/题材一致）。刮到才覆盖，未刮到则保留原值。
+  let newStudio: string | null = film.studio ?? null;
+  let newLabel: string | null = film.label ?? null;
 
   if (scope.meta) {
     for (const name of scraped.actresses) {
@@ -280,6 +283,10 @@ export async function scrapeOneFilm(filmId: number) {
     const oldTags = (db.prepare('SELECT tag FROM film_tags WHERE film_id=?').all(filmId) as { tag: string }[]).map(t => t.tag);
     tags = Array.from(new Set([...oldTags, ...scraped.genres]));
 
+    // 制作商/发行商独立字段；刮到非空值才覆盖。
+    if (scraped.studio && scraped.studio.trim()) newStudio = scraped.studio.trim();
+    if (scraped.label && scraped.label.trim()) newLabel = scraped.label.trim();
+
     const scrapeNote = formatScrapeNotes(scraped);
     if (scrapeNote) {
       if (!newNotes) newNotes = scrapeNote;
@@ -290,18 +297,22 @@ export async function scrapeOneFilm(filmId: number) {
   const scrapedAt = nowMs();
   const newScanStatus = newCode && newTitle ? 'parsed' : (newCode || newTitle ? 'partial' : 'unknown');
   tx(db, () => {
-    // 始终更新 scraped_at；title/cover/notes 按开关写
+    // 始终更新 scraped_at；title/cover/notes/studio/label 按开关写
     if (scope.title || scope.cover || scope.meta) {
       db.prepare(
         `UPDATE films SET
           title=?,
           cover_path=COALESCE(?, cover_path),
           notes=?,
+          studio=?,
+          label=?,
           scraped_at=?,
           updated_at=?,
           scan_status=?
          WHERE id=?`
-      ).run(newTitle, scope.cover ? coverRel : null, newNotes, scrapedAt, scrapedAt, newScanStatus, filmId);
+      ).run(newTitle, scope.cover ? coverRel : null, newNotes,
+        newStudio, newLabel,
+        scrapedAt, scrapedAt, newScanStatus, filmId);
     } else {
       // 仅样图等极端情况也打标记
       db.prepare(`UPDATE films SET scraped_at=?, updated_at=? WHERE id=?`).run(scrapedAt, scrapedAt, filmId);
@@ -336,6 +347,7 @@ export async function scrapeOneFilm(filmId: number) {
     dirExists: !!dirExists,
     releaseDate: scraped.releaseDate,
     studio: scraped.studio,
+    label: scraped.label,
     scraped_at: scrapedAt,
     scope,
     logFile: getCurrentLogFile(),

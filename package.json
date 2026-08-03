@@ -16,7 +16,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0"
+    "better-sqlite3": "^11.3.0",
+    "opencc-js": "^1.4.1"
   },
   "devDependencies": {
     "@tanstack/react-table": "^8.20.5",

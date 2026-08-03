@@ -11,6 +11,7 @@ import { up as migration0007 } from './migrations/0007-actor-favorite';
 import { up as migration0008 } from './migrations/0008-film-favorite';
 import { up as migration0009 } from './migrations/0009-scrape-failed-at';
 import { up as migration0010 } from './migrations/0010-actor-avatar';
+import { up as migration0011 } from './migrations/0011-film-studio-label';
 
 let db: Database.Database | null = null;
 
@@ -56,6 +57,7 @@ export function openDb(dbPath?: string): Database.Database {
   if (!current || current.version < 8) migration0008(instance);
   if (!current || current.version < 9) migration0009(instance);
   if (!current || current.version < 10) migration0010(instance);
+  if (!current || current.version < 11) migration0011(instance);
   return instance;
 }
 
@@ -83,5 +85,6 @@ export function openDbForTest(target: string): Database.Database {
   migration0008(instance);
   migration0009(instance);
   migration0010(instance);
+  migration0011(instance);
   return instance;
 }

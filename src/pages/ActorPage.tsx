@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ActorJavbusData, ActorRow, FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
+import { toTraditional } from '../util/zhConvert';
 
 const mfl = (): any => (window as any).mfl;
 
@@ -95,6 +96,10 @@ export default function ActorPage() {
   // 左侧演员列表的搜索框：纯前端按 name/aliases 子串过滤，没有 IPC 往返。
   // 大小写不敏感以应对大小写不一的别名（例如 0-Ogura vs ogura）。
   const [actorSearch, setActorSearch] = useState('');
+  // 右侧影片列表的搜索框：纯前端按 编号/标题 子串过滤（与影片库搜索的核心字段一致）。
+  // 演员页本就是一次性加载全部影片、无分页，前端过滤即可；标签不在 FilmRow 内、
+  // 演员名在此场景冗余（已限定单演员），故只匹配 code/title。
+  const [filmSearch, setFilmSearch] = useState('');
   // 演员元数据编辑表单：名称 / 分类 / 备注 / 别名 / JavBus 地址都嵌在同一表单里。
   // 没有独立的"别名/合并"面板——别名作为元数据的一部分。
   const [metaEditing, setMetaEditing] = useState(false);
@@ -114,6 +119,8 @@ export default function ActorPage() {
   const [mergeSuggestOpen, setMergeSuggestOpen] = useState(false);
   const [merging, setMerging] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // 演员 → 标签：把演员名作为标签加到其全部影片，再删除演员条目（不可逆）。
+  const [converting, setConverting] = useState(false);
 
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   // 元数据表单首个输入框：打开编辑时主动 focus，避免偶发点不中/无焦点。
@@ -223,13 +230,22 @@ export default function ActorPage() {
     return () => { cancelled = true; };
   }, [actors, paneHeight]);
 
-  // 应用左列搜索过滤。Name 直接 includes；别名任意匹配也算命中。
-  const search = actorSearch.trim().toLowerCase();
+  // 应用左列搜索过滤。简体/繁体双向归一（都转繁体后比较），兼容大小写。
+  const search = toTraditional(actorSearch.trim().toLowerCase());
   const visibleActors = search
     ? actors.filter(a =>
-        a.name.toLowerCase().includes(search)
-        || (a.aliases ?? []).some(al => al.toLowerCase().includes(search)))
+        toTraditional(a.name.toLowerCase()).includes(search)
+        || (a.aliases ?? []).some(al => toTraditional(al.toLowerCase()).includes(search)))
     : actors;
+
+  // 应用右列影片搜索。code/title 简繁双向归一后子串匹配，空搜索则展示全部。
+  const filmQ = toTraditional(filmSearch.trim().toLowerCase());
+  const visibleFilms = useMemo(
+    () => !filmQ ? films : films.filter(f =>
+      toTraditional((f.code ?? '').toLowerCase()).includes(filmQ)
+      || toTraditional((f.title ?? '').toLowerCase()).includes(filmQ)),
+    [films, filmQ],
+  );
 
   const selectedActor = actors.find(a => a.id === selected) ?? null;
 
@@ -265,6 +281,8 @@ export default function ActorPage() {
     setMergeTargetId(null);
     setMergeQuery('');
     setMergeSuggestOpen(false);
+    // 切换演员时清空右列影片搜索，避免上一个演员的搜索条件残留。
+    setFilmSearch('');
     mfl().actors.films(selected).then((rows: FilmRow[]) => {
       if (!cancelled) setFilms(rows);
     }).catch(() => {});
@@ -362,6 +380,52 @@ export default function ActorPage() {
       toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const convertActorToTag = async () => {
+    if (selected == null || !selectedActor) return;
+    const count = selectedActor.film_count ?? 0;
+    if (!confirm(
+      `将演员「${selectedActor.name}」转化为标签？\n`
+      + `· 从 ${count} 部影片中移除该演员关联\n`
+      + `· 将「${selectedActor.name}」作为标签加到这些影片\n`
+      + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
+    )) return;
+    setConverting(true);
+    try {
+      const n = await mfl().actors.convertToTag(selected) as number;
+      toast.push({ text: `已转化：${selectedActor.name} → 标签（${n} 部影片）`, kind: 'success' });
+      setSelected(null);
+      reloadActors();
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setConverting(false);
+    }
+  };
+
+  const convertActorToStudio = async (role: 'studio' | 'label') => {
+    if (selected == null || !selectedActor) return;
+    const roleLabel = role === 'studio' ? '制作商' : '发行商';
+    const count = selectedActor.film_count ?? 0;
+    if (!confirm(
+      `将演员「${selectedActor.name}」转化为${roleLabel}？\n`
+      + `· 从 ${count} 部影片中移除该演员关联\n`
+      + `· 将「${selectedActor.name}」写入这些影片的${roleLabel}字段\n`
+      + `  （${roleLabel}是单值字段，会覆盖影片原有的${roleLabel}）\n`
+      + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
+    )) return;
+    setConverting(true);
+    try {
+      const n = await mfl().actors.convertToStudio(selected, role) as number;
+      toast.push({ text: `已转化：${selectedActor.name} → ${roleLabel}（${n} 部影片）`, kind: 'success' });
+      setSelected(null);
+      reloadActors();
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      setConverting(false);
     }
   };
 
@@ -827,6 +891,72 @@ export default function ActorPage() {
               </div>
             </details>
 
+            {/* 转化为标签 / 厂商：适合「演员」其实是题材/标签/厂商（被错配成演员）的场景。
+                批量把演员名写入对应字段（标签多对多不覆盖；厂商单值列会覆盖），再删除演员条目。
+                低频且不可逆，默认折叠。 */}
+            <details style={{ marginBottom: 12, padding: 8, background: '#2a1a28', borderRadius: 4, fontSize: 12, border: '1px solid #333' }}>
+              <summary style={{ color: '#aaa', cursor: 'pointer', userSelect: 'none' }}>转化为标签 / 厂商</summary>
+              <div style={{ marginTop: 8 }}>
+                <div style={{ color: '#bbb', marginBottom: 8 }}>
+                  将「{selectedActor.name}」从其 {selectedActor.film_count ?? 0} 部影片中移除，并把演员名写入对应字段，最后删除该演员条目。
+                  适合该「演员」其实是题材/标签/厂商（被错配成演员）的场景。
+                </div>
+                <div style={{ color: '#888', fontSize: 11, marginBottom: 8 }}>
+                  标签为多对多（不覆盖已有）；制作商/发行商为单值字段，会覆盖影片原有值。
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    disabled={converting || (selectedActor.film_count ?? 0) === 0}
+                    onClick={() => void convertActorToTag()}
+                    title={((selectedActor.film_count ?? 0) === 0) ? '该演员无关联影片，无需转化' : '把演员名转为标签并删除演员'}
+                    style={{
+                      padding: '4px 10px',
+                      border: '1px solid #5a2a5a',
+                      borderRadius: 4,
+                      background: converting ? '#2a1030' : '#3a1040',
+                      color: '#e080d0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {converting ? '转化中…' : '→ 标签'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={converting || (selectedActor.film_count ?? 0) === 0}
+                    onClick={() => void convertActorToStudio('studio')}
+                    title="把演员名写入这些影片的制作商字段（覆盖），并删除演员"
+                    style={{
+                      padding: '4px 10px',
+                      border: '1px solid #2a5a5a',
+                      borderRadius: 4,
+                      background: converting ? '#103030' : '#104040',
+                      color: '#80d0d0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    → 制作商
+                  </button>
+                  <button
+                    type="button"
+                    disabled={converting || (selectedActor.film_count ?? 0) === 0}
+                    onClick={() => void convertActorToStudio('label')}
+                    title="把演员名写入这些影片的发行商字段（覆盖），并删除演员"
+                    style={{
+                      padding: '4px 10px',
+                      border: '1px solid #2a5a5a',
+                      borderRadius: 4,
+                      background: converting ? '#103030' : '#104040',
+                      color: '#80d0d0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    → 发行商
+                  </button>
+                </div>
+              </div>
+            </details>
+
             <div
               role="tablist"
               aria-label="演员影片"
@@ -842,8 +972,45 @@ export default function ActorPage() {
 
             {actorTab === 'films' ? (
               <div role="tabpanel" aria-label="本地影片">
+                <div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="搜索 编号/标题"
+                    value={filmSearch}
+                    onChange={e => setFilmSearch(e.target.value)}
+                    onMouseDown={e => e.stopPropagation()}
+                    style={{
+                      flex: '0 1 280px',
+                      boxSizing: 'border-box',
+                      padding: 4,
+                      background: '#2a2a2a',
+                      color: '#fff',
+                      border: '1px solid #444',
+                      borderRadius: 4,
+                    }}
+                  />
+                  {filmSearch.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setFilmSearch('')}
+                      title="清除搜索"
+                      style={{
+                        padding: '2px 8px',
+                        background: '#2a2a2a',
+                        color: '#aaa',
+                        border: '1px solid #444',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      清除
+                    </button>
+                  )}
+                </div>
                 <FilmTable
-                  rows={films}
+                  rows={visibleFilms}
                   hideActorsColumn
                   onRowDoubleClick={(film) => {
                     // 进详情前强制再存一次左侧列表 scrollTop。
@@ -851,15 +1018,18 @@ export default function ActorPage() {
                     if (el) {
                       saveListScroll(el.scrollTop);
                     }
-                    // 带上当前演员下的影片 id 序列，详情页可用 ←/→ 切换。
+                    // 带上当前搜索过滤后的影片 id 序列，详情页 ←/→ 在可见范围内切换。
                     nav(`/film/${film.id}`, {
                       state: {
                         from: 'actors',
-                        listIds: films.map(f => f.id),
+                        listIds: visibleFilms.map(f => f.id),
                       },
                     });
                   }}
                 />
+                {visibleFilms.length === 0 && films.length > 0 && (
+                  <div style={{ color: '#666', fontSize: 12, padding: 4 }}>无匹配影片</div>
+                )}
               </div>
             ) : (
               <div role="tabpanel" aria-label="最新作品">

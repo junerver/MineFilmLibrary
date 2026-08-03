@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import { getDb } from '../db';
 import { nowMs, tx } from '../db/dao';
 import { recomputeCodeCounts } from '../db/queries';
+import { toTraditional } from '../util/zhConvert';
 import type { FilmFilter, ListResult, FilmRow } from '../util/types';
 
 const PAGE_SIZE_DEFAULT = 50;
@@ -33,9 +34,10 @@ export function registerLibraryIpc() {
     if (filter.duplicate_codes_only) where.push('code_count > 1');
     if (filter.favorites_only) where.push('is_favorite=1');
     if (filter.q) {
-      where.push('(code LIKE ? OR title LIKE ? OR id IN (SELECT film_id FROM film_tags WHERE tag LIKE ?) OR id IN (SELECT film_id FROM film_actors fa JOIN actors a ON a.id=fa.actor_id WHERE a.name LIKE ?))');
-      const q = `%${filter.q}%`;
-      args.push(q, q, q, q);
+      where.push('(code LIKE ? OR title LIKE ? OR studio LIKE ? OR label LIKE ? OR id IN (SELECT film_id FROM film_tags WHERE tag LIKE ?) OR id IN (SELECT film_id FROM film_actors fa JOIN actors a ON a.id=fa.actor_id WHERE a.name LIKE ?))');
+      // 简体输入转繁体再 LIKE，与库中 javbus 抓来的繁体内容互通。
+      const q = `%${toTraditional(filter.q)}%`;
+      args.push(q, q, q, q, q, q);
     }
     if (filter.locales?.length) {
       where.push(`locale IN (${filter.locales.map(() => '?').join(',')})`);
@@ -113,7 +115,7 @@ export function registerLibraryIpc() {
     return tx(db, () => {
       const sets: string[] = [];
       const args: any[] = [];
-      for (const k of ['code', 'title', 'locale', 'parent_type', 'parent_dir_name', 'cover_path', 'notes', 'scan_status', 'scraped_at'] as const) {
+      for (const k of ['code', 'title', 'locale', 'parent_type', 'parent_dir_name', 'cover_path', 'notes', 'scan_status', 'scraped_at', 'studio', 'label'] as const) {
         if (k in patch) { sets.push(`${k}=?`); args.push((patch as any)[k]); }
       }
       sets.push('updated_at=?'); args.push(nowMs());

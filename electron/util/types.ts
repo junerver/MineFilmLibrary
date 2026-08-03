@@ -24,10 +24,21 @@ export interface FilmRow {
   is_favorite: number;
   /** 最近一次成功刮削时间戳（ms），null/undefined 表示未刮削 */
   scraped_at?: number | null;
+  /** 制作商（javbus 製作商） */
+  studio?: string | null;
+  /** 发行商（javbus 發行商） */
+  label?: string | null;
   // 列表场景下附带：本片所有演员的名字，已用"、"拼好。详情页走 FilmDetail 自带 actors 数组。
   actors_names?: string;
   created_at: number;
   updated_at: number;
+}
+
+/** 厂商聚合行：同一名字作为制作商/发行商分别的影片计数。 */
+export interface StudioAggRow {
+  name: string;
+  as_studio_count: number;
+  as_label_count: number;
 }
 
 export interface ActorRow {

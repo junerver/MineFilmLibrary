@@ -337,13 +337,12 @@ export function safeFileBase(name: string): string {
     .slice(0, 120) || 'cover';
 }
 
-/** 把发行日/厂牌等拼进备注用的多行文本。 */
+/** 把发行日/片长等拼进备注用的多行文本。
+ *  注意：制作商/发行商已写入独立列（films.studio/label），不再拼进 notes，避免重复。 */
 export function formatScrapeNotes(r: JavbusScrapeResult): string {
   const lines: string[] = [];
   if (r.releaseDate) lines.push(`发行日期: ${r.releaseDate}`);
   if (r.runtime) lines.push(`片长: ${r.runtime}`);
-  if (r.studio) lines.push(`制作商: ${r.studio}`);
-  if (r.label) lines.push(`发行商: ${r.label}`);
   if (r.pageUrl) lines.push(`来源: ${r.pageUrl}`);
   return lines.join('\n');
 }

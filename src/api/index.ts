@@ -37,12 +37,28 @@ export interface MflApi {
     addAlias(id: number, alias: string): Promise<boolean>;
     removeAlias(alias: string): Promise<boolean>;
     merge(fromId: number, toId: number): Promise<boolean>;
+    /** 演员 → 标签：把演员名加到其全部影片作为标签，再删除演员条目；返回受影响影片数 */
+    convertToTag(id: number): Promise<number>;
+    /** 演员 → 厂商：把演员名写入其全部影片的 studio/label（单值列，会覆盖），再删除演员；返回受影响影片数 */
+    convertToStudio(id: number, role: 'studio' | 'label'): Promise<number>;
   };
   genres: {
     list(): Promise<T.GenreRow[]>;
     create(name: string): Promise<number>;
     delete(id: number): Promise<boolean>;
     allTags(): Promise<{ tag: string; count: number }[]>;
+  };
+  tags: {
+    films(tag: string): Promise<T.FilmRow[]>;
+    rename(from: string, to: string): Promise<boolean>;
+    merge(from: string, to: string): Promise<boolean>;
+    remove(tag: string): Promise<boolean>;
+  };
+  studios: {
+    list(): Promise<T.StudioAggRow[]>;
+    films(name: string, role: 'studio' | 'label' | 'any'): Promise<T.FilmRow[]>;
+    rename(from: string, to: string, role: 'studio' | 'label'): Promise<boolean>;
+    remove(name: string, role: 'studio' | 'label'): Promise<boolean>;
   };
   scanner: {
     listRoots(): Promise<T.ScanRootRow[]>;

@@ -191,6 +191,65 @@ export function mergeActors(db: Database.Database, fromId: number, toId: number)
 }
 
 /**
+ * 把演员转化为标签（批量、不可逆）：
+ *   1. 取该演员关联的全部影片
+ *   2. 把演员名作为标签加到这些影片（INSERT OR IGNORE，已存在不重复）
+ *   3. 删除演员条目（CASCADE 清理 film_actors / actor_aliases）
+ * 返回受影响影片数。
+ *
+ * 与 mergeActors 不同：这里不搬迁关联，而是「移除关联 + 加同名标签 + 删除演员」。
+ * 适合该「演员」其实是题材/标签（如「中出」「单体作品」被错配成演员）的场景。
+ */
+export function convertActorToTag(db: Database.Database, actorId: number): number {
+  return tx(db, () => {
+    const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actorId) as
+      { id: number; name: string } | undefined;
+    if (!actor) throw new Error('演员不存在，无法转化');
+    const tag = actor.name.trim();
+    if (!tag) throw new Error('演员名称为空，无法转化为标签');
+
+    const films = db.prepare('SELECT film_id FROM film_actors WHERE actor_id=?').all(actorId) as { film_id: number }[];
+    const insTag = db.prepare('INSERT OR IGNORE INTO film_tags(tag, film_id) VALUES(?,?)');
+    for (const f of films) insTag.run(tag, f.film_id);
+
+    // 删除演员；film_actors / actor_aliases 随 ON DELETE CASCADE 清理。
+    db.prepare('DELETE FROM actors WHERE id=?').run(actorId);
+    return films.length;
+  });
+}
+
+/**
+ * 把演员转化为厂商（批量、不可逆）：
+ *   1. 取该演员关联的全部影片
+ *   2. 把演员名写入这些影片的 studio（role='studio'）或 label（role='label'）
+ *      —— 注意 studio/label 是单值列，**会覆盖**影片原有值
+ *   3. 删除演员条目（CASCADE 清理 film_actors / actor_aliases）
+ * 返回受影响影片数。
+ *
+ * 与 convertActorToTag 的区别：标签是多对多（INSERT OR IGNORE 不覆盖），
+ * 厂商是单值列（UPDATE 覆盖）。调用方需明确告知用户会覆盖。
+ */
+export function convertActorToStudio(db: Database.Database, actorId: number, role: 'studio' | 'label'): number {
+  const col = role === 'studio' ? 'studio' : 'label';
+  return tx(db, () => {
+    const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actorId) as
+      { id: number; name: string } | undefined;
+    if (!actor) throw new Error('演员不存在，无法转化');
+    const name = actor.name.trim();
+    if (!name) throw new Error('演员名称为空，无法转化为厂商');
+
+    const films = db.prepare('SELECT film_id FROM film_actors WHERE actor_id=?').all(actorId) as { film_id: number }[];
+    // 单值列直接 UPDATE（覆盖）。列名已白名单收敛，不存在注入。
+    const upd = db.prepare(`UPDATE films SET ${col}=? WHERE id=?`);
+    for (const f of films) upd.run(name, f.film_id);
+
+    // 删除演员；film_actors / actor_aliases 随 ON DELETE CASCADE 清理。
+    db.prepare('DELETE FROM actors WHERE id=?').run(actorId);
+    return films.length;
+  });
+}
+
+/**
  * 重算每部未删除影片的 code_count（同 code 而且未删除的影片数量）。
  * 必须在扫描结束后调用一次，保证列表徽标反映最新重复情况。
  * code 为 NULL 的影片不计入（COUNT(*) 自动排除 NULL 分组即为 0）。

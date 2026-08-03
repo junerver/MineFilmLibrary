@@ -58,7 +58,7 @@ src/                      # Renderer (Vite + React)
 test/                     # vitest (Node env for DB/scanner; jsdom for React)
 ```
 
-**Sidebar nav:** 影片库 / 演员 / 设置. Scan and trash live under **设置** tabs (`/settings?tab=scan|trash|privacy|scrape|data`); `/scan` and `/trash` redirect for bookmarks. Global scan/batch progress bars stay in `Layout`.
+**Sidebar nav:** 影片库 / 演员 / 标签 / 厂商 / 设置. 标签页聚合 `film_tags`（扁平字符串，无独立主表）；厂商页聚合 `films.studio`/`films.label`（制作商+发行商合并去重，显示双角色计数）。Scan and trash live under **设置** tabs (`/settings?tab=scan|trash|privacy|scrape|data`); `/scan` and `/trash` redirect for bookmarks. Global scan/batch progress bars stay in `Layout`.
 
 **IPC surface:** All renderer ↔ main traffic goes through `window.mfl` (preload). Prefer live `const mfl = () => (window as any).mfl` (or typed helper) in components so tests can stub per case; avoid binding `api` once at module load when testability matters.
 
@@ -92,14 +92,16 @@ After **main-process** TypeScript changes, **restart Electron** (Vite HMR does n
 ## Database & migrations
 
 - Runtime schema is applied via **numbered migrations** in `electron/db/migrations/`:
-  - `0001-init` … `0004-scraped-at` (chain in `openDb` / `openDbForTest`)
+  - `0001-init` … `0011-film-studio-label` (chain in `openDb` / `openDbForTest`; current `schema_version=11`)
 - `schema.sql` is **documentation/reference only** — do not load it at runtime (packaging).
 - New columns: prefer `ALTER TABLE … ADD COLUMN` with existence check; bump `schema_version`.
 - Important fields/agents should know:
   - `films.code` — not UNIQUE (dupes allowed); `code_count` maintained after scan
   - `films.scraped_at` — last successful scrape; batch scrape **skips** non-null
+  - `films.studio` / `films.label` — 制作商/发行商（javbus 製作商/發行商），字符串列无独立主表；厂商页用 GROUP BY 聚合。0011 迁移会从存量 notes 解析回填这两列并清除原文。
   - `actor_aliases` — alias → canonical actor; scrape/scan must resolve aliases before insert
 - Use `upsertActorByName` / `resolveActorIdByName` for actor resolution (exact + case-insensitive alias/name). Do not create a new actor when the scraped name is only an alias of an existing one.
+- `convertActorToTag(db, actorId)` / `convertActorToStudio(db, actorId, role)` — 演员 → 标签/厂商（不可逆）：把演员名写入对应字段后 DELETE 演员（CASCADE 清理 film_actors/aliases）。标签用 INSERT OR IGNORE（多对多，不覆盖）；厂商用 UPDATE（单值列 studio/label，**会覆盖**影片原值）。适合「演员」其实是题材/标签/厂商（被错配成演员）的场景。
 
 WAL mode + `foreign_keys=ON`. Tests: use `openDbForTest` + retrying temp-dir cleanup on Windows.
 
@@ -199,10 +201,12 @@ Before claiming done:
 | Concern | Where |
 |---------|--------|
 | Scan pipeline | `electron/scanner/index.ts`, `walker.ts`, `parser.ts` |
-| Actor alias merge | `electron/db/queries.ts` (`upsertActorByName`, `mergeActors`) |
+| Actor alias merge | `electron/db/queries.ts` (`upsertActorByName`, `mergeActors`, `convertActorToTag`) |
 | Library list/sort/filter | `electron/ipc/library.ts`, `src/pages/LibraryPage.tsx` |
 | Cover IPC | `electron/ipc/cover.ts`, `src/components/CoverGuard.tsx` |
-| Scrape | `electron/ipc/scrape.ts`, `electron/scraper/javbus.ts` |
+| Scrape (writes studio/label) | `electron/ipc/scrape.ts`, `electron/scraper/javbus.ts` |
+| Tags (聚合/重命名/合并/删除) | `electron/ipc/tags.ts`, `src/pages/TagPage.tsx` |
+| Studios (制作商+发行商聚合) | `electron/ipc/studios.ts`, `src/pages/StudioPage.tsx` |
 | Settings (tabs: scan/trash/privacy/scrape/data) | `electron/ipc/settings.ts`, `src/pages/SettingsPage.tsx`, `src/pages/settings/*` |
 | Global progress bars | `src/components/Layout.tsx` + scan/batch hooks |
 

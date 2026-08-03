@@ -10,6 +10,10 @@ export interface FilmRow {
   /** 1 = 已收藏，0 = 普通 */
   is_favorite: number;
   scraped_at?: number | null;
+  /** 制作商（javbus 製作商） */
+  studio?: string | null;
+  /** 发行商（javbus 發行商） */
+  label?: string | null;
   // 列表场景：演员名用"、"拼接。详情页用 FilmDetail.actors。
   actors_names?: string;
   created_at: number; updated_at: number;
@@ -126,8 +130,19 @@ export interface ScrapeResult {
   dirExists: boolean;
   releaseDate?: string | null;
   studio?: string | null;
+  /** 发行商（javbus 發行商） */
+  label?: string | null;
   logFile?: string | null;
 }
+
+/** 厂商聚合行：同一名字作为制作商/发行商分别的影片计数。 */
+export interface StudioAggRow {
+  name: string;
+  as_studio_count: number;
+  as_label_count: number;
+}
+/** 标签聚合行（与 genres:allTags 返回一致）。 */
+export interface TagAggRow { tag: string; count: number; }
 
 /** 刮削进度事件（主进程 scrape:progress）。 */
 export interface ScrapeProgressEvent {

@@ -63,12 +63,14 @@ function formatDetailHeading(code: string | null | undefined, title: string | nu
 
 // 编辑表单字段定义：依次为 字段键 / 中文标签 / 是否长文本。
 // 用数组驱动渲染可保证每个 input 都带可见 label——这正是 Q6 缺失的部分。
-const EDIT_FIELDS: { key: 'code' | 'title' | 'locale' | 'tags' | 'parent_dir_name' | 'notes'; label: string; multiline?: boolean }[] = [
+const EDIT_FIELDS: { key: 'code' | 'title' | 'locale' | 'tags' | 'parent_dir_name' | 'studio' | 'label' | 'notes'; label: string; multiline?: boolean }[] = [
   { key: 'code', label: '编号' },
   { key: 'title', label: '标题' },
   { key: 'locale', label: '后缀 (C / U)' },
   { key: 'tags', label: '标签 (逗号分隔)' },
   { key: 'parent_dir_name', label: '父目录' },
+  { key: 'studio', label: '制作商' },
+  { key: 'label', label: '发行商' },
   { key: 'notes', label: '备注', multiline: true },
 ];
 
@@ -180,6 +182,8 @@ export default function FilmDetailPage() {
           notes: f.notes ?? '',
           tags: f.tags.join(', '),
           parent_dir_name: f.parent_dir_name,
+          studio: f.studio ?? '',
+          label: f.label ?? '',
         });
         // 详情页返回的 actors 直接作为已选初值；保留 id+name 两个属性。
         setSelectedActors(f.actors.map(a => ({ id: a.id, name: a.name })));
@@ -279,6 +283,8 @@ export default function FilmDetailPage() {
       locale: form.locale || null,
       notes: form.notes || null,
       parent_dir_name: form.parent_dir_name,
+      studio: form.studio || null,
+      label: form.label || null,
       tags: (form.tags as string).split(',').map((s: string) => s.trim()).filter(Boolean),
       actor_ids: selectedActors.map(a => a.id),
     };
@@ -485,6 +491,8 @@ export default function FilmDetailPage() {
           notes: f.notes ?? '',
           tags: f.tags.join(', '),
           parent_dir_name: f.parent_dir_name,
+          studio: f.studio ?? '',
+          label: f.label ?? '',
         });
       }
       const files = await mfl().files.listByFilm(film.id);
@@ -630,6 +638,8 @@ export default function FilmDetailPage() {
                 </span>
               } />
               <Row k="备注" v={<PrivacyText blur={blurText}>{film.notes || '—'}</PrivacyText>} />
+              <Row k="制作商" v={<PrivacyText blur={blurText}>{film.studio || '—'}</PrivacyText>} />
+              <Row k="发行商" v={<PrivacyText blur={blurText}>{film.label || '—'}</PrivacyText>} />
               {film.same_code_films && film.same_code_films.length > 0 && (
                 <Row k="同编号" v={
                   <PrivacyText blur={blurText} as="span">

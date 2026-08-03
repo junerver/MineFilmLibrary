@@ -6,12 +6,15 @@ import {
   listActorAliases,
   removeActorAlias,
   mergeActors,
+  convertActorToTag,
+  convertActorToStudio,
   resolveActorIdByName,
   applyBuiltinActressToActor,
   scheduleBuiltinActorFill,
 } from '../db/queries';
 import { normalizeActorPageUrl, scrapeJavbusActorPage } from '../scraper/javbus';
 import { lookupActressByCandidates, searchActress } from '../data/actorLookup';
+import { toTraditional } from '../util/zhConvert';
 import type { ActorRow } from '../util/types';
 
 export function registerActorIpc() {
@@ -170,7 +173,8 @@ export function registerActorIpc() {
   ipcMain.handle('actors:quickFind', (_e, q: string) => {
     const term = (q ?? '').trim();
     if (!term) return [];
-    const like = `%${term}%`;
+    // 简体输入转繁体再 LIKE，命中库中繁体演员名/别名。
+    const like = `%${toTraditional(term)}%`;
     return getDb().prepare(
       `SELECT DISTINCT a.id, a.name FROM actors a
          LEFT JOIN actor_aliases al ON al.actor_id = a.id
@@ -218,5 +222,15 @@ export function registerActorIpc() {
     // 合并后目标可能多了能命中内置库的别名
     scheduleBuiltinActorFill(getDb(), toId);
     return true;
+  });
+  // 演员 → 标签：把演员名作为标签加到其全部影片，再删除演员条目（关联随 CASCADE 清理）。
+  // 返回受影响影片数。
+  ipcMain.handle('actors:convertToTag', (_e, actorId: number) => {
+    return convertActorToTag(getDb(), actorId);
+  });
+  // 演员 → 厂商：把演员名写入其全部影片的 studio/label（单值列，会覆盖），再删除演员。
+  // role: 'studio'（制作商）| 'label'（发行商）。返回受影响影片数。
+  ipcMain.handle('actors:convertToStudio', (_e, actorId: number, role: 'studio' | 'label') => {
+    return convertActorToStudio(getDb(), actorId, role);
   });
 }

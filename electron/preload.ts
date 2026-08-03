@@ -31,12 +31,26 @@ contextBridge.exposeInMainWorld('mfl', {
     addAlias: (id: number, alias: string) => invoke('actors:addAlias', id, alias),
     removeAlias: (alias: string) => invoke('actors:removeAlias', alias),
     merge: (fromId: number, toId: number) => invoke('actors:merge', fromId, toId),
+    convertToTag: (id: number) => invoke('actors:convertToTag', id),
+    convertToStudio: (id: number, role: 'studio' | 'label') => invoke('actors:convertToStudio', id, role),
   },
   genres: {
     list: () => invoke('genres:list'),
     create: (name: string) => invoke('genres:create', name),
     delete: (id: number) => invoke('genres:delete', id),
     allTags: () => invoke('genres:allTags'),
+  },
+  tags: {
+    films: (tag: string) => invoke('tags:films', tag),
+    rename: (from: string, to: string) => invoke('tags:rename', from, to),
+    merge: (from: string, to: string) => invoke('tags:merge', from, to),
+    remove: (tag: string) => invoke('tags:delete', tag),
+  },
+  studios: {
+    list: () => invoke('studios:list'),
+    films: (name: string, role: 'studio' | 'label' | 'any') => invoke('studios:films', name, role),
+    rename: (from: string, to: string, role: 'studio' | 'label') => invoke('studios:rename', from, to, role),
+    remove: (name: string, role: 'studio' | 'label') => invoke('studios:delete', name, role),
   },
   scanner: {
     listRoots: () => invoke('scanner:listRoots'),

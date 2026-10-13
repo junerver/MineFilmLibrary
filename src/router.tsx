@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout';
 import { Toaster } from './components/Toaster';
+import { ConfirmProvider } from './components/ConfirmDialog';
 import LibraryPage from './pages/LibraryPage';
 import FilmDetailPage from './pages/FilmDetailPage';
 import ActorPage from './pages/ActorPage';
@@ -10,7 +11,8 @@ import SettingsPage from './pages/SettingsPage';
 
 export default function Router() {
   return (
-    <Toaster>
+    <ConfirmProvider>
+      <Toaster>
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Navigate to="/library" replace />} />
@@ -25,6 +27,7 @@ export default function Router() {
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>
-    </Toaster>
+      </Toaster>
+    </ConfirmProvider>
   );
 }

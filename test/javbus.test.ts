@@ -71,7 +71,8 @@ describe('javbus helpers', () => {
     expect(r.pageUrl).toBe('https://www.javbus.com/CLUB-641');
     const notes = formatScrapeNotes(r);
     expect(notes).toContain('发行日期: 2021-05-28');
-    expect(notes).toContain('制作商: 変態紳士倶楽部');
+    // 制作商/发行商已写入独立列（films.studio/label），不再拼进 notes。
+    expect(notes).not.toContain('制作商');
   });
 
   it('parseJavbusActorHtml extracts profile fields and latest works without images', () => {

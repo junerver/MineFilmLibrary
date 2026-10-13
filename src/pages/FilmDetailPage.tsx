@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import type { FilmDetail, FilmFileRow, FilmPathStatus } from '../api/types';
 import CoverGuard from '../components/CoverGuard';
 import { useToast } from '../components/Toaster';
+import { useConfirm } from '../components/ConfirmDialog';
 import { PrivacyText, textPrivacyActive, usePrivacySettings } from '../hooks/usePrivacySettings';
 
 const mfl = (): any => (window as any).mfl;
@@ -109,6 +110,9 @@ export default function FilmDetailPage() {
   const nextId = hasList ? listIds[listIndex + 1] : undefined;
 
   const toast = useToast();
+  // 应用内确认弹窗替代原生 confirm：Electron/Windows 下原生 confirm 关闭后
+  // 破坏渲染进程焦点，操作几次后输入框全部点不进（切出窗口再切回才恢复）。
+  const confirm = useConfirm();
   const privacy = usePrivacySettings();
   const blurText = textPrivacyActive(privacy);
   const [film, setFilm] = useState<FilmDetail | null>(null);
@@ -300,7 +304,7 @@ export default function FilmDetailPage() {
   };
 
   const softDelete = async () => {
-    if (!confirm('软删除？')) return;
+    if (!(await confirm({ title: '软删除影片', message: '软删除？', confirmText: '软删除', danger: true }))) return;
     try {
       await mfl().library.softDelete(film.id);
       // 软删除后同样尽量退回带来源 query 的列表页。
@@ -363,9 +367,12 @@ export default function FilmDetailPage() {
     if (input == null) return;
     const next = input.trim();
     if (!next || next === current) return;
-    if (!confirm(
-      `确认将影片目录重命名？\n\n原名称：${current}\n新名称：${next}\n\n路径：${film.abs_path}\n\n此操作会修改磁盘目录，并更新库中本片路径。`,
-    )) return;
+    if (!(await confirm({
+      title: '重命名影片目录',
+      message: `确认将影片目录重命名？\n\n原名称：${current}\n新名称：${next}\n\n路径：${film.abs_path}\n\n此操作会修改磁盘目录，并更新库中本片路径。`,
+      confirmText: '重命名',
+      danger: true,
+    }))) return;
     setPathBusy(true);
     try {
       const r = await mfl().files.renameFilmDir(film.id, next);
@@ -396,9 +403,12 @@ export default function FilmDetailPage() {
     if (input == null) return;
     const next = input.trim();
     if (!next || next === current) return;
-    if (!confirm(
-      `危险操作：重命名父目录\n\n原名称：${current}\n新名称：${next}\n\n当前影片：${film.abs_path}\n\n将修改磁盘上的父目录，并批量更新库中所有位于该父路径下的影片（含文件路径）。确认继续？`,
-    )) return;
+    if (!(await confirm({
+      title: '重命名父目录',
+      message: `危险操作：重命名父目录\n\n原名称：${current}\n新名称：${next}\n\n当前影片：${film.abs_path}\n\n将修改磁盘上的父目录，并批量更新库中所有位于该父路径下的影片（含文件路径）。确认继续？`,
+      confirmText: '重命名',
+      danger: true,
+    }))) return;
     setPathBusy(true);
     try {
       const r = await mfl().files.renameParentDir(film.id, next);
@@ -418,9 +428,12 @@ export default function FilmDetailPage() {
 
   const deleteFilmFile = async (file: FilmFileRow) => {
     if (!film || !pathValid || pathBusy) return;
-    if (!confirm(
-      `确认删除文件并移入系统回收站？\n\n${file.name}\n${file.abs_path}\n\n此操作不可通过本应用撤销（可从系统回收站恢复）。`,
-    )) return;
+    if (!(await confirm({
+      title: '删除文件',
+      message: `确认删除文件并移入系统回收站？\n\n${file.name}\n${file.abs_path}\n\n此操作不可通过本应用撤销（可从系统回收站恢复）。`,
+      confirmText: '删除',
+      danger: true,
+    }))) return;
     setPathBusy(true);
     try {
       const r = await mfl().files.deleteFile(film.id, file.id);

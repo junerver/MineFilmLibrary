@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { FilmRow, StudioAggRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
+import { useConfirm } from '../components/ConfirmDialog';
 import { toTraditional } from '../util/zhConvert';
 
 const mfl = (): any => (window as any).mfl;
@@ -13,6 +14,8 @@ type StudioRole = 'studio' | 'label';
 // films.studio（制作商）/ films.label（发行商）是字符串列，无独立主表。
 export default function StudioPage() {
   const toast = useToast();
+  // 原生 confirm 在 Electron/Windows 下破坏输入焦点，统一换应用内确认弹窗
+  const confirm = useConfirm();
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialStudio = searchParams.get('studio');
@@ -101,7 +104,12 @@ export default function StudioPage() {
     if (!selected) return;
     const count = opRole === 'studio' ? (selectedAgg?.as_studio_count ?? 0) : (selectedAgg?.as_label_count ?? 0);
     const roleLabel = opRole === 'studio' ? '制作商' : '发行商';
-    if (!confirm(`移除${roleLabel}「${selected}」标记？\n将从 ${count} 部影片中清除该${roleLabel}字段（影片本身保留）。此操作不可撤销。`)) return;
+    if (!(await confirm({
+      title: `移除${roleLabel}标记`,
+      message: `移除${roleLabel}「${selected}」标记？\n将从 ${count} 部影片中清除该${roleLabel}字段（影片本身保留）。此操作不可撤销。`,
+      confirmText: '移除',
+      danger: true,
+    }))) return;
     setBusy(true);
     try {
       await mfl().studios.remove(selected, opRole);

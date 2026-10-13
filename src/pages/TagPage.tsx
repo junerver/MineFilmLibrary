@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
+import { useConfirm } from '../components/ConfirmDialog';
 import { toTraditional } from '../util/zhConvert';
 
 const mfl = (): any => (window as any).mfl;
@@ -13,6 +14,8 @@ type TagAgg = { tag: string; count: number };
 // 支持 重命名 / 合并到 / 删除。标签在 DB 是扁平字符串，无独立主表。
 export default function TagPage() {
   const toast = useToast();
+  // 原生 confirm 在 Electron/Windows 下破坏输入焦点，统一换应用内确认弹窗
+  const confirm = useConfirm();
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTag = searchParams.get('tag');
@@ -99,7 +102,12 @@ export default function TagPage() {
     const target = mergeValue.trim();
     if (!target) { toast.push({ text: '请输入目标标签名', kind: 'error' }); return; }
     if (target === selected) { toast.push({ text: '不能合并到自己', kind: 'error' }); return; }
-    if (!confirm(`将标签「${selected}」合并到「${target}」？\n所有带该标签的影片会改挂到目标标签，源标签将被删除。此操作不可撤销。`)) return;
+    if (!(await confirm({
+      title: '合并标签',
+      message: `将标签「${selected}」合并到「${target}」？\n所有带该标签的影片会改挂到目标标签，源标签将被删除。此操作不可撤销。`,
+      confirmText: '合并',
+      danger: true,
+    }))) return;
     setBusy(true);
     try {
       await mfl().tags.merge(selected, target);
@@ -114,7 +122,12 @@ export default function TagPage() {
   const doDelete = async () => {
     if (!selected) return;
     const n = selectedTagAgg?.count ?? 0;
-    if (!confirm(`删除标签「${selected}」？\n将从 ${n} 部影片中移除该标签（影片本身保留）。此操作不可撤销。`)) return;
+    if (!(await confirm({
+      title: '删除标签',
+      message: `删除标签「${selected}」？\n将从 ${n} 部影片中移除该标签（影片本身保留）。此操作不可撤销。`,
+      confirmText: '删除',
+      danger: true,
+    }))) return;
     setBusy(true);
     try {
       await mfl().tags.remove(selected);

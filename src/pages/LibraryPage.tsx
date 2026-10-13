@@ -5,6 +5,7 @@ import type { FilmFilter, FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import FilterBar from '../components/FilterBar';
 import { useToast } from '../components/Toaster';
+import { useConfirm } from '../components/ConfirmDialog';
 
 // Resolve the IPC bridge live (see FilterBar for rationale).
 const mfl = (): MflApi => (window as any).mfl;
@@ -161,6 +162,8 @@ function readLastLibraryQuery(): string | null {
 
 export default function LibraryPage() {
   const toast = useToast();
+  // 原生 confirm 在 Electron/Windows 下破坏输入焦点，统一换应用内确认弹窗
+  const confirm = useConfirm();
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   // 排序/分页/搜索以 URL 为源：进详情再 history.back 时 query 仍在，状态自然恢复。
@@ -379,7 +382,11 @@ export default function LibraryPage() {
     const msg = selectedNoCode > 0
       ? `将并行刮削 ${selectableWithCode.length} 部（另有 ${selectedNoCode} 部无编号将跳过）。可切换页面，任务不中断。是否继续？`
       : `将并行刮削 ${selectableWithCode.length} 部影片（默认并发 3）。可切换到演员/详情页，任务不中断。是否继续？`;
-    if (!confirm(msg)) return;
+    if (!(await confirm({
+      title: '批量刮削',
+      message: msg,
+      confirmText: '开始刮削',
+    }))) return;
 
     setStartingBatch(true);
     try {

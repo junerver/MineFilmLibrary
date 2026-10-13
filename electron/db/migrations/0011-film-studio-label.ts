@@ -25,9 +25,11 @@ export function up(db: Database.Database) {
   const STRIP_LABEL_RE = /[ \t]*[发發]行商[：:]\s*.+[ \t]*(?:\r?\n)?/g;
 
   // 仅扫描 notes 中含关键字的行，避免全表处理。
+  // 预筛不能带冒号：全角冒号（：）和繁体（製作商/發行商）都要放行，正则里再精确校验。
   const rows = db.prepare(
-    'SELECT id, notes, studio, label FROM films WHERE notes IS NOT NULL AND (notes LIKE ? OR notes LIKE ?)',
-  ).all('%制作商:%', '%发行商:%') as {
+    `SELECT id, notes, studio, label FROM films
+     WHERE notes IS NOT NULL AND (notes LIKE '%制作商%' OR notes LIKE '%製作商%' OR notes LIKE '%发行商%' OR notes LIKE '%發行商%')`,
+  ).all() as {
     id: number; notes: string; studio: string | null; label: string | null
   }[];
 

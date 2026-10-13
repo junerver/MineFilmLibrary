@@ -8,6 +8,7 @@ import {
   replaceFilmActors, replaceFilmGenres, replaceFilmTags, replaceFilmFiles,
   filmCodeExists, listAllFilmPaths, recomputeCodeCounts,
 } from '../db/queries';
+import { loadDriveMappings, realToVirtual, virtualToReal } from '../util/driveMap';
 import type { ParsedDir, ScanMode } from '../util/types';
 
 export interface ProgressCb { (p: ScanProgress): void; }
@@ -63,7 +64,12 @@ function shouldRepairStoredCode(
 export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult {
   const stats: ScanStats = { dir_seen: 0, dir_added: 0, dir_updated: 0, dir_removed: 0, code_repaired: 0 };
   const addedFilms: ScanAddedFilm[] = [];
-  const visits = Array.from(walkFilmDirs(opts.rootPath, opts.maxDepth));
+  // 盘符映射：rootPath 是库内虚拟路径，实际按真实盘符遍历磁盘；
+  // 命中的目录再换回虚拟盘符参与基线比对与入库，保证记录稳定。
+  const mappings = loadDriveMappings(db);
+  const realRoot = virtualToReal(opts.rootPath, mappings);
+  const toVirtual = (p: string) => realToVirtual(p, mappings);
+  const visits = Array.from(walkFilmDirs(realRoot, opts.maxDepth));
 
   // Windows 路径大小写不敏感。数据库中可能保留了旧路径的不同大小写，
   // 用标准化 key 匹配可避免重扫时把同一目录当成新片重复插入。
@@ -73,8 +79,13 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
   };
   const baseline = new Map(listAllFilmPaths(db, opts.rootPath).map(r => [pathKey(r.abs_path), r]));
 
-  for (const v of visits) {
+  for (const visit of visits) {
     stats.dir_seen++;
+    const v = {
+      ...visit,
+      filmAbsPath: toVirtual(visit.filmAbsPath),
+      parentAbsPath: toVirtual(visit.parentAbsPath),
+    };
     opts.onProgress?.({ stage: 'scan', current: stats.dir_seen, total: visits.length, currentPath: v.filmAbsPath });
 
     const key = pathKey(v.filmAbsPath);
@@ -97,7 +108,8 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
       continue;
     }
 
-    const files = listFilmFiles(v.filmAbsPath);
+    // 文件清单按真实路径读取，abs_path 换回虚拟盘符入库。
+    const files = listFilmFiles(visit.filmAbsPath).map(f => ({ ...f, abs_path: toVirtual(f.abs_path) }));
 
     if (prev) {
       const dirChanged = v.mtime_ms !== prev.fs_mtime_ms;

@@ -14,10 +14,19 @@ import {
   replacePathPrefix,
   validateDirName,
 } from '../util/pathOps';
+import { loadDriveMappings, realToVirtual, virtualToReal } from '../util/driveMap';
 
 type OpResult =
   | { ok: true; filmAbsPath?: string; parentAbsPath?: string; updatedFilms?: number; updatedFiles?: number }
   | { ok: false; error: string };
+
+// 盘符映射：库内存的是虚拟盘符，磁盘访问统一在此换算。
+function toRealPath(p: string): string {
+  return virtualToReal(p, loadDriveMappings(getDb()));
+}
+function toVirtualPath(p: string): string {
+  return realToVirtual(p, loadDriveMappings(getDb()));
+}
 
 async function assertDirExists(abs: string): Promise<string | null> {
   try {
@@ -104,7 +113,7 @@ export function registerFileIpc() {
     const film = getDb().prepare('SELECT abs_path FROM films WHERE id=?').get(filmId) as { abs_path: string } | undefined;
     if (!film) return { valid: false, reason: 'film_not_found' as const };
     try {
-      const stat = await fs.promises.stat(film.abs_path);
+      const stat = await fs.promises.stat(toRealPath(film.abs_path));
       return stat.isDirectory()
         ? { valid: true, reason: 'ok' as const }
         : { valid: false, reason: 'not_directory' as const };
@@ -120,14 +129,14 @@ export function registerFileIpc() {
   ipcMain.handle('files:openInFolder', async (_e, filmId: number) => {
     const film = getDb().prepare('SELECT abs_path FROM films WHERE id=?').get(filmId) as { abs_path: string } | undefined;
     if (!film) return false;
-    const result = await shell.openPath(film.abs_path);
+    const result = await shell.openPath(toRealPath(film.abs_path));
     return result === '';
   });
 
   ipcMain.handle('files:restat', (_e, filmId: number) => {
     const film = getDb().prepare('SELECT abs_path FROM films WHERE id=?').get(filmId) as { abs_path: string } | undefined;
     if (!film) return false;
-    const files = listFilmFiles(film.abs_path);
+    const files = listFilmFiles(toRealPath(film.abs_path)).map(f => ({ ...f, abs_path: toVirtualPath(f.abs_path) }));
     tx(getDb(), () => replaceFilmFiles(getDb(), filmId, files));
     return true;
   });
@@ -146,7 +155,7 @@ export function registerFileIpc() {
     if (!film) return { ok: false, error: '影片不存在' };
 
     const oldAbs = path.resolve(film.abs_path);
-    const dirErr = await assertDirExists(oldAbs);
+    const dirErr = await assertDirExists(toRealPath(oldAbs));
     if (dirErr) return { ok: false, error: dirErr };
 
     const trimmed = newName.trim();
@@ -155,7 +164,7 @@ export function registerFileIpc() {
     }
 
     const newAbs = path.join(path.dirname(oldAbs), trimmed);
-    const freeErr = await assertTargetFree(newAbs);
+    const freeErr = await assertTargetFree(toRealPath(newAbs));
     if (freeErr) return { ok: false, error: freeErr };
 
     // 库内 UNIQUE(abs_path) 冲突（pathKey 比对，兼容 Windows 大小写）
@@ -165,7 +174,7 @@ export function registerFileIpc() {
     }
 
     try {
-      await fs.promises.rename(oldAbs, newAbs);
+      await fs.promises.rename(toRealPath(oldAbs), toRealPath(newAbs));
     } catch (error) {
       return { ok: false, error: `磁盘重命名失败: ${(error as Error).message}` };
     }
@@ -175,7 +184,7 @@ export function registerFileIpc() {
       return { ok: true, filmAbsPath: newAbs, updatedFilms, updatedFiles };
     } catch (error) {
       // 尽量回滚磁盘 rename
-      try { await fs.promises.rename(newAbs, oldAbs); } catch { /* ignore */ }
+      try { await fs.promises.rename(toRealPath(newAbs), toRealPath(oldAbs)); } catch { /* ignore */ }
       return { ok: false, error: `库更新失败: ${(error as Error).message}` };
     }
   });
@@ -199,11 +208,11 @@ export function registerFileIpc() {
     }
 
     const oldParent = parentAbsOfFilm(filmAbs);
-    const dirErr = await assertDirExists(oldParent);
+    const dirErr = await assertDirExists(toRealPath(oldParent));
     if (dirErr) return { ok: false, error: `父目录${dirErr}` };
 
     // 影片目录本身也必须存在，避免半残状态
-    const filmDirErr = await assertDirExists(filmAbs);
+    const filmDirErr = await assertDirExists(toRealPath(filmAbs));
     if (filmDirErr) return { ok: false, error: filmDirErr };
 
     const trimmed = newName.trim();
@@ -212,7 +221,7 @@ export function registerFileIpc() {
     }
 
     const newParent = path.join(path.dirname(oldParent), trimmed);
-    const freeErr = await assertTargetFree(newParent);
+    const freeErr = await assertTargetFree(toRealPath(newParent));
     if (freeErr) return { ok: false, error: freeErr };
 
     // 预检：父目录改名后会不会与库内其他路径冲突
@@ -233,7 +242,7 @@ export function registerFileIpc() {
     }
 
     try {
-      await fs.promises.rename(oldParent, newParent);
+      await fs.promises.rename(toRealPath(oldParent), toRealPath(newParent));
     } catch (error) {
       return { ok: false, error: `磁盘重命名失败: ${(error as Error).message}` };
     }
@@ -252,7 +261,7 @@ export function registerFileIpc() {
         updatedFiles,
       };
     } catch (error) {
-      try { await fs.promises.rename(newParent, oldParent); } catch { /* ignore */ }
+      try { await fs.promises.rename(toRealPath(newParent), toRealPath(oldParent)); } catch { /* ignore */ }
       return { ok: false, error: `库更新失败: ${(error as Error).message}` };
     }
   });
@@ -279,7 +288,7 @@ export function registerFileIpc() {
     }
 
     try {
-      await fs.promises.stat(fileAbs);
+      await fs.promises.stat(toRealPath(fileAbs));
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === 'ENOENT') {
@@ -291,7 +300,7 @@ export function registerFileIpc() {
     }
 
     try {
-      await shell.trashItem(fileAbs);
+      await shell.trashItem(toRealPath(fileAbs));
     } catch (error) {
       return { ok: false, error: `移入回收站失败: ${(error as Error).message}` };
     }

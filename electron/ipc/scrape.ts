@@ -12,6 +12,7 @@ import {
   replaceFilmFiles,
 } from '../db/queries';
 import { listFilmFiles } from '../scanner/walker';
+import { loadDriveMappings, realToVirtual, virtualToReal } from '../util/driveMap';
 import {
   scrapeJavbus,
   fetchBinary,
@@ -155,7 +156,10 @@ export async function scrapeOneFilm(filmId: number) {
     throw e;
   }
 
-  const dirExists = !!(film.abs_path && fs.existsSync(film.abs_path));
+  // 盘符映射：库内虚拟盘符 -> 磁盘真实盘符；下载的图写进真实目录，清单仍按虚拟路径入库。
+  const mappings = loadDriveMappings(db);
+  const realDir = film.abs_path ? virtualToReal(film.abs_path, mappings) : '';
+  const dirExists = !!(realDir && fs.existsSync(realDir));
   const written: string[] = [];
   let coverRel: string | null = film.cover_path ?? null;
   let samplesOk = 0;
@@ -163,7 +167,7 @@ export async function scrapeOneFilm(filmId: number) {
   let samplesSkip = 0;
 
   if (dirExists && (scope.cover || scope.samples)) {
-    const existing = listExistingBasenames(film.abs_path);
+    const existing = listExistingBasenames(realDir);
     const baseName = safeFileBase(scraped.title || scraped.code);
 
     // —— 封面 ——
@@ -175,7 +179,7 @@ export async function scrapeOneFilm(filmId: number) {
           const tCover = log.timed(TAG, `film#${filmId} cover`);
           try {
             const buf = await fetchBinary(scraped.coverUrl, imageTimeoutMs());
-            fs.writeFileSync(path.join(film.abs_path, coverFile), buf);
+            fs.writeFileSync(path.join(realDir, coverFile), buf);
             written.push(coverFile);
             existing.add(coverFile.toLowerCase());
             coverRel = coverFile;
@@ -188,7 +192,7 @@ export async function scrapeOneFilm(filmId: number) {
           coverRel = coverRel || coverFile;
           log.info(TAG, `film#${filmId} cover skip exists ${coverFile}`);
         }
-        if (!coverRel) coverRel = pickCoverRel(film.abs_path, null);
+        if (!coverRel) coverRel = pickCoverRel(realDir, null);
       }
     } else {
       log.info(TAG, `film#${filmId} cover skipped by setting`);
@@ -216,7 +220,7 @@ export async function scrapeOneFilm(filmId: number) {
           const t0 = Date.now();
           try {
             const buf = await fetchBinary(url, imgTimeout);
-            fs.writeFileSync(path.join(film.abs_path, sampleFile), buf);
+            fs.writeFileSync(path.join(realDir, sampleFile), buf);
             written.push(sampleFile);
             existing.add(sampleFile.toLowerCase());
             samplesOk++;
@@ -241,10 +245,10 @@ export async function scrapeOneFilm(filmId: number) {
       log.info(TAG, `film#${filmId} samples skipped by setting`);
     }
 
-    if (!coverRel && scope.cover) coverRel = pickCoverRel(film.abs_path, written[0] ?? null);
+    if (!coverRel && scope.cover) coverRel = pickCoverRel(realDir, written[0] ?? null);
 
     if (written.length > 0 || scope.cover || scope.samples) {
-      const files = listFilmFiles(film.abs_path);
+      const files = listFilmFiles(realDir).map(f => ({ ...f, abs_path: realToVirtual(f.abs_path, mappings) }));
       replaceFilmFiles(db, filmId, files);
       log.info(TAG, `film#${filmId} restat files=${files.length} written=${written.length}`);
     }

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import type { FilmRow } from '../../api/types';
+import { useConfirm } from '../../components/ConfirmDialog';
 import { mfl } from './settingsHelpers';
 
 /** 软删除影片列表：恢复 / 彻底删除。 */
 export default function TrashSettingsPanel() {
   const [rows, setRows] = useState<FilmRow[]>([]);
   const [tick, setTick] = useState(0);
+  // 原生 confirm 在 Electron/Windows 下破坏输入焦点，统一换应用内确认弹窗
+  const confirm = useConfirm();
 
   useEffect(() => {
     mfl().library.list({ page: 1, page_size: 500, include_deleted: true })
@@ -41,10 +44,9 @@ export default function TrashSettingsPanel() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      if (confirm('彻底删除？')) {
-                        void mfl().library.hardDelete(r.id).then(() => setTick(t => t + 1));
-                      }
+                    onClick={async () => {
+                      if (!(await confirm({ title: '彻底删除', message: '彻底删除该影片的库记录？', confirmText: '彻底删除', danger: true }))) return;
+                      void mfl().library.hardDelete(r.id).then(() => setTick(t => t + 1));
                     }}
                   >
                     彻底删除

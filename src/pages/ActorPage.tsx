@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ActorJavbusData, ActorRow, FilmRow } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
+import { useConfirm } from '../components/ConfirmDialog';
 import { toTraditional } from '../util/zhConvert';
 
 const mfl = (): any => (window as any).mfl;
@@ -84,6 +85,9 @@ function clearPendingScroll() {
 
 export default function ActorPage() {
   const toast = useToast();
+  // 应用内确认弹窗：原生 window.confirm 在 Electron/Windows 上关闭后会破坏
+  // 渲染进程焦点（点输入框无法聚焦），操作几次后整个页面输入框都点不进。
+  const confirm = useConfirm();
   const nav = useNavigate();
   // 用 URL query `?actor=N` 持久化当前选中演员——这样进详情页再返回时
   // (浏览器 history back 或显式 nav 回 /actors) 还能恢复选中状态，
@@ -340,12 +344,15 @@ export default function ActorPage() {
     const from = actors.find(a => a.id === selected);
     const to = actors.find(a => a.id === targetId);
     if (!from || !to) return;
-    if (!confirm(
-      `将「${from.name}」合并到「${to.name}」？\n`
-      + `· ${from.name} 的影片会归到 ${to.name}\n`
-      + `· 「${from.name}」会成为 ${to.name} 的别名\n`
-      + `· 「${from.name}」条目将被删除\n\n此操作不可撤销（可用整库备份恢复）。`,
-    )) return;
+    if (!(await confirm({
+      title: '合并演员',
+      message: `将「${from.name}」合并到「${to.name}」？\n`
+        + `· ${from.name} 的影片会归到 ${to.name}\n`
+        + `· 「${from.name}」会成为 ${to.name} 的别名\n`
+        + `· 「${from.name}」条目将被删除\n\n此操作不可撤销（可用整库备份恢复）。`,
+      confirmText: '合并',
+      danger: true,
+    }))) return;
     setMerging(true);
     try {
       await mfl().actors.merge(selected, targetId);
@@ -369,7 +376,12 @@ export default function ActorPage() {
         + `· 将从 ${count} 部影片中移除该演员（影片本身保留）\n`
         + `· 其别名记录也会一并清除\n\n此操作不可撤销（可用整库备份恢复）。`
       : `确定删除演员「${selectedActor.name}」？\n此操作不可撤销（可用整库备份恢复）。`;
-    if (!confirm(msg)) return;
+    if (!(await confirm({
+      title: '删除演员',
+      message: msg,
+      confirmText: '删除',
+      danger: true,
+    }))) return;
     setDeleting(true);
     try {
       await mfl().actors.delete(selected);
@@ -386,12 +398,15 @@ export default function ActorPage() {
   const convertActorToTag = async () => {
     if (selected == null || !selectedActor) return;
     const count = selectedActor.film_count ?? 0;
-    if (!confirm(
-      `将演员「${selectedActor.name}」转化为标签？\n`
-      + `· 从 ${count} 部影片中移除该演员关联\n`
-      + `· 将「${selectedActor.name}」作为标签加到这些影片\n`
-      + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
-    )) return;
+    if (!(await confirm({
+      title: '转化为标签',
+      message: `将演员「${selectedActor.name}」转化为标签？\n`
+        + `· 从 ${count} 部影片中移除该演员关联\n`
+        + `· 将「${selectedActor.name}」作为标签加到这些影片\n`
+        + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
+      confirmText: '转化',
+      danger: true,
+    }))) return;
     setConverting(true);
     try {
       const n = await mfl().actors.convertToTag(selected) as number;
@@ -409,13 +424,16 @@ export default function ActorPage() {
     if (selected == null || !selectedActor) return;
     const roleLabel = role === 'studio' ? '制作商' : '发行商';
     const count = selectedActor.film_count ?? 0;
-    if (!confirm(
-      `将演员「${selectedActor.name}」转化为${roleLabel}？\n`
-      + `· 从 ${count} 部影片中移除该演员关联\n`
-      + `· 将「${selectedActor.name}」写入这些影片的${roleLabel}字段\n`
-      + `  （${roleLabel}是单值字段，会覆盖影片原有的${roleLabel}）\n`
-      + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
-    )) return;
+    if (!(await confirm({
+      title: `转化为${roleLabel}`,
+      message: `将演员「${selectedActor.name}」转化为${roleLabel}？\n`
+        + `· 从 ${count} 部影片中移除该演员关联\n`
+        + `· 将「${selectedActor.name}」写入这些影片的${roleLabel}字段\n`
+        + `  （${roleLabel}是单值字段，会覆盖影片原有的${roleLabel}）\n`
+        + `· 删除演员条目（含其别名记录）\n\n此操作不可撤销（可用整库备份恢复）。`,
+      confirmText: '转化',
+      danger: true,
+    }))) return;
     setConverting(true);
     try {
       const n = await mfl().actors.convertToStudio(selected, role) as number;

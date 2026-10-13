@@ -3,9 +3,15 @@ import { getDb } from '../db';
 import { nowMs, tx } from '../db/dao';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadDriveMappings, virtualToReal } from '../util/driveMap';
 
 const MIME_BY_EXT: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+
+// 盘符映射：库里存虚拟盘符，读图时换算成真实盘符。
+function toRealPath(p: string): string {
+  return virtualToReal(p, loadDriveMappings(getDb()));
+}
 
 function readImageFile(abs: string): { kind: 'file'; mime: string; base64: string } | null {
   const ext = path.extname(abs).toLowerCase();
@@ -23,7 +29,8 @@ export function registerCoverIpc() {
   ipcMain.handle('cover:listImages', (_e, filmId: number) => {
     const film = getDb().prepare('SELECT abs_path, cover_path FROM films WHERE id=?').get(filmId) as
       { abs_path: string; cover_path: string | null } | undefined;
-    if (!film?.abs_path || !fs.existsSync(film.abs_path)) {
+    const realDir = film?.abs_path ? toRealPath(film.abs_path) : '';
+    if (!film || !realDir || !fs.existsSync(realDir)) {
       return { images: [] as { rel_path: string; name: string }[], cover_path: null as string | null };
     }
 
@@ -33,7 +40,7 @@ export function registerCoverIpc() {
 
     if (!images.length) {
       try {
-        images = fs.readdirSync(film.abs_path)
+        images = fs.readdirSync(realDir)
           .filter(n => IMAGE_EXT.has(path.extname(n).toLowerCase()))
           .sort((a, b) => a.localeCompare(b))
           .map(n => ({ rel_path: n, name: n }));
@@ -61,7 +68,7 @@ export function registerCoverIpc() {
     const film = getDb().prepare('SELECT cover_path, cover_blob_id, abs_path FROM films WHERE id=?').get(filmId) as any;
     if (!film) return null;
 
-    // 指定目录相对路径（封面切换浏览）
+    // 指定目录相对路径（封面切换浏览）。越界校验用库内虚拟路径做，读取换真实盘符。
     if (opts.rel_path) {
       const rel = String(opts.rel_path).replace(/\\/g, '/');
       if (!rel || rel.includes('..') || path.isAbsolute(rel)) return null;
@@ -71,7 +78,7 @@ export function registerCoverIpc() {
         // 允许文件在 root 下
         if (!path.resolve(abs).startsWith(path.resolve(film.abs_path))) return null;
       }
-      return readImageFile(abs);
+      return readImageFile(path.join(toRealPath(film.abs_path), rel));
     }
 
     if (film.cover_blob_id) {
@@ -79,7 +86,7 @@ export function registerCoverIpc() {
       if (blob) return { kind: 'blob', mime: blob.mime, base64: blob.data.toString('base64') };
     }
     if (film.cover_path) {
-      return readImageFile(path.join(film.abs_path, film.cover_path));
+      return readImageFile(path.join(toRealPath(film.abs_path), film.cover_path));
     }
     return null;
   });

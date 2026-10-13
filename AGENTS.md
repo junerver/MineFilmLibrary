@@ -117,6 +117,12 @@ WAL mode + `foreign_keys=ON`. Tests: use `openDbForTest` + retrying temp-dir cle
 - Parser keeps **original code casing** in storage; UI may `.toUpperCase()` for display
 - Detail heading: if title already contains code, **do not** prefix code again (`formatDetailHeading`)
 
+### Drive letter mapping (盘符映射)
+
+- Setting key `drive_mappings` holds JSON `[{ from: 'F:', to: 'G:' }]`（库盘符 → 真实盘符）。UI 在设置 → 扫描 →「盘符映射」编辑。
+- **DB 与 UI 永远只存/显示虚拟（库）盘符**；磁盘访问必须在主进程入口经 `electron/util/driveMap.ts` 的 `virtualToReal` / `realToVirtual` 换算。已接入：`runScan`（真实盘遍历、虚拟盘入库）、`ipc/files.ts`（stat/open/restat/rename/trash）、`ipc/cover.ts`（读图）、`ipc/scrape.ts`（目录判断/写图/restat）。
+- 新增任何 `fs` / `shell` 调用如果路径来自 `films.abs_path` / `film_files.abs_path` / `scan_roots.path`，必须先过 `virtualToReal`；扫描/清单结果入库前必须过 `realToVirtual`。无映射时两者都是恒等函数，不影响既有行为。
+
 ### Scrape settings (settings table keys)
 
 | Key | Default | Meaning |
@@ -201,6 +207,7 @@ Before claiming done:
 | Concern | Where |
 |---------|--------|
 | Scan pipeline | `electron/scanner/index.ts`, `walker.ts`, `parser.ts` |
+| Drive letter mapping (盘符映射) | `electron/util/driveMap.ts`（设置键 `drive_mappings`） |
 | Actor alias merge | `electron/db/queries.ts` (`upsertActorByName`, `mergeActors`, `convertActorToTag`) |
 | Library list/sort/filter | `electron/ipc/library.ts`, `src/pages/LibraryPage.tsx` |
 | Cover IPC | `electron/ipc/cover.ts`, `src/components/CoverGuard.tsx` |

@@ -134,6 +134,37 @@ function isVerificationOrChallengePage(html: string): boolean {
  * 复用 Chromium 会话再读一次最终 DOM。该路径只在解析失败时触发，避免每次
  * 刮削都启动窗口；远程页面在隔离、无 Node 权限的渲染器中运行。
  */
+// 已知广告域名：隐藏浏览器加载页面时直接阻断，避免广告 iframe（jads.co 等）
+// 拖慢 load 事件甚至 stall 到超时。列表保持保守，只列确认的弹窗/横幅网络。
+const AD_BLOCK_URL_PATTERNS = [
+  '*://*.jads.co/*',
+  '*://*.exoclick.com/*',
+  '*://*.exosrv.com/*',
+  '*://*.exodynamic.com/*',
+  '*://*.popads.net/*',
+  '*://*.popcash.net/*',
+  '*://*.tsyndicate.com/*',
+  '*://*.hilltopads.net/*',
+];
+
+let adBlockAttached = false;
+
+/** 取 javbus 持久会话并确保广告拦截已挂载（session 复用，只挂一次）。 */
+function javbusPartitionSession(electron: any) {
+  const ses = electron.session.fromPartition('persist:mfl-javbus');
+  if (!adBlockAttached && ses?.webRequest) {
+    try {
+      ses.webRequest.onBeforeRequest({ urls: AD_BLOCK_URL_PATTERNS }, (_details: unknown, callback: (r: { cancel: boolean }) => void) => {
+        callback({ cancel: true });
+      });
+      adBlockAttached = true;
+    } catch {
+      // webRequest 不可用时保持原样，仅慢一点
+    }
+  }
+  return ses;
+}
+
 async function fetchRenderedText(url: string, timeoutMs = 30000): Promise<string> {
   let electron: any;
   try {
@@ -144,8 +175,7 @@ async function fetchRenderedText(url: string, timeoutMs = 30000): Promise<string
   }
   if (!electron?.BrowserWindow || !electron?.session) throw new Error('当前运行环境不支持隐藏浏览器');
 
-  const partition = 'persist:mfl-javbus';
-  const ses = electron.session.fromPartition(partition);
+  const ses = javbusPartitionSession(electron);
   try {
     await ses.cookies.set({ url, name: 'existmag', value: 'all', path: '/' });
   } catch {
@@ -158,7 +188,7 @@ async function fetchRenderedText(url: string, timeoutMs = 30000): Promise<string
     focusable: false,
     skipTaskbar: true,
     webPreferences: {
-      partition,
+      partition: 'persist:mfl-javbus',
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -206,6 +236,107 @@ async function fetchJavbusPageHtml(url: string): Promise<string> {
     // 让 UI 明确知道隐藏浏览器也未能完成站点挑战。
     if (directError) throw directError;
     throw renderError;
+  }
+}
+
+// 隐藏浏览器里从最终 DOM 读取磁力表：表已注入 → 直接读；未注入 → 模拟点击
+// 「磁力」入口等站点脚本注入；仍没有 → 页面上下文内请求站点磁力接口。
+const READ_MAGNET_TABLE_JS = String.raw`(() => {
+  const table = document.querySelector('#magnet-table');
+  if (table && table.querySelectorAll('a[href^="magnet:"]').length > 0) return table.outerHTML;
+  return '';
+})()`;
+
+const CLICK_AND_READ_MAGNETS_JS = String.raw`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const hits = Array.from(document.querySelectorAll('a, button, li, span'))
+    .filter((el) => /磁力|magnet/i.test(el.textContent || ''))
+    .filter((el) => !el.querySelector('a[href*="magnet"], button'));
+  const trigger = hits.find((el) => el.offsetParent !== null) || hits[0];
+  if (trigger) {
+    try { trigger.click(); } catch (e) { /* ignore */ }
+    await sleep(1500);
+  }
+  const table = document.querySelector('#magnet-table');
+  if (table) return table.outerHTML;
+  const holder = document.querySelector('#magnets-content');
+  return holder ? holder.innerHTML : '';
+})()`;
+
+const AJAX_MAGNETS_IN_PAGE_JS = String.raw`(async () => {
+  const html = document.documentElement.innerHTML;
+  const gid = (window.gid !== undefined && window.gid !== null) ? String(window.gid) : (html.match(/var\s+gid\s*=\s*(\d+)/) || [])[1];
+  const uc = (window.uc !== undefined && window.uc !== null) ? String(window.uc) : ((html.match(/var\s+uc\s*=\s*["']?([\w-]+)/) || [])[1] || '');
+  const img = (window.img !== undefined && window.img !== null) ? String(window.img) : ((html.match(/var\s+img\s*=\s*["']([^"']+)["']/) || [])[1] || '');
+  const lang = (window.lang !== undefined && window.lang !== null) ? String(window.lang) : ((html.match(/var\s+lang\s*=\s*["']([^"']+)["']/) || [])[1] || 'zh');
+  if (!gid) return '';
+  const floor = Math.floor(Math.random() * 1000) + 1;
+  const res = await fetch('/ajax/uncledatoolsbyajax.php?gid=' + encodeURIComponent(gid) + '&lang=' + encodeURIComponent(lang) + '&img=' + encodeURIComponent(img || '') + '&uc=' + encodeURIComponent(uc) + '&floor=' + floor, { credentials: 'include' });
+  return await res.text();
+})()`;
+
+/**
+ * 在隐藏浏览器里加载作品页并从最终 DOM 提取磁力表。
+ * 磁力表由站点自身脚本按需 AJAX 注入，静态 HTML 里没有；这里复用 Chromium
+ * 会话（persist:mfl-javbus，含年龄确认 Cookie）加载页面，依次尝试
+ * 读表 → 点击触发注入 → 页面上下文内请求站点磁力接口。
+ */
+async function fetchRenderedMagnetFragment(url: string, timeoutMs = 30000): Promise<string> {
+  let electron: any;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    electron = require('electron');
+  } catch {
+    throw new Error('当前运行环境不支持隐藏浏览器');
+  }
+  if (!electron?.BrowserWindow || !electron?.session) throw new Error('当前运行环境不支持隐藏浏览器');
+
+  const ses = javbusPartitionSession(electron);
+  try {
+    await ses.cookies.set({ url, name: 'existmag', value: 'all', path: '/' });
+  } catch {
+    // Cookie 写入失败时仍尝试加载，某些镜像不要求该确认值。
+  }
+
+  const win = new electron.BrowserWindow({
+    show: false,
+    // 禁止抢主窗口焦点；否则刮削路径下用户正在输入时会偶发失焦
+    focusable: false,
+    skipTaskbar: true,
+    webPreferences: {
+      partition: 'persist:mfl-javbus',
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  try { win.webContents.setUserAgent(UA); } catch { /* use Chromium default if unavailable */ }
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`隐藏浏览器加载超时（${timeoutMs}ms）`)), timeoutMs);
+    });
+    await Promise.race([
+      win.loadURL(url, { httpReferrer: url }),
+      timeout,
+    ]);
+    await new Promise(resolve => setTimeout(resolve, 400));
+
+    let fragment = await win.webContents.executeJavaScript(READ_MAGNET_TABLE_JS, true);
+    if (!fragment) {
+      fragment = await win.webContents.executeJavaScript(CLICK_AND_READ_MAGNETS_JS, true);
+    }
+    if (!fragment) {
+      fragment = await win.webContents.executeJavaScript(AJAX_MAGNETS_IN_PAGE_JS, true);
+    }
+    const text = typeof fragment === 'string' ? fragment : '';
+    log.info(TAG, `rendered magnet fragment ${Date.now() - started}ms len=${text.length}`);
+    return text;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (!win.isDestroyed()) win.destroy();
   }
 }
 
@@ -377,6 +508,10 @@ export interface JavbusActorScrapeResult {
   pageUrl: string;
   profile: JavbusActorProfile;
   works: JavbusActorWork[];
+  /** 已嗅探的作品列表页数（parse 固定为 1，翻页由 actors:scrapeMoreWorks 递增并回写） */
+  worksPages: number;
+  /** 列表是否存在「下一頁」入口 */
+  worksHasNext: boolean;
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -533,11 +668,239 @@ export function parseJavbusActorHtml(html: string, pageUrl: string): JavbusActor
   if (!profile.name && fields.length === 0 && works.length === 0) {
     throw new Error(`演员主页解析失败（页面结构可能已变化）: ${normalizedUrl}`);
   }
-  return { pageUrl: normalizedUrl, profile, works };
+  return { pageUrl: normalizedUrl, profile, works, worksPages: 1, worksHasNext: hasWorksNextPage(html) };
 }
 
 export async function scrapeJavbusActorPage(pageUrl: string): Promise<JavbusActorScrapeResult> {
   const normalizedUrl = normalizeActorPageUrl(pageUrl);
   const html = await fetchJavbusPageHtml(normalizedUrl);
   return parseJavbusActorHtml(html, normalizedUrl);
+}
+
+// —— 作品列表翻页嗅探 ——
+
+export interface JavbusWorksPage {
+  works: JavbusActorWork[];
+  /** 页面上存在「下一頁」入口 */
+  hasNext: boolean;
+}
+
+/** JavBus 列表页末尾的分页条有「下一頁」锚点；末页只有「上一頁」。 */
+function hasWorksNextPage(html: string): boolean {
+  return /下一頁|下一页/.test(html);
+}
+
+/** 作品列表第 N 页解析：仅作品列表 + 是否有下一页，不要求资料面板存在。 */
+export function parseJavbusWorksPageHtml(html: string, pageUrl: string): JavbusWorksPage {
+  const normalizedUrl = normalizeActorPageUrl(pageUrl);
+  return { works: extractActorWorks(html, normalizedUrl), hasNext: hasWorksNextPage(html) };
+}
+
+export async function scrapeJavbusWorksPage(pageUrl: string): Promise<JavbusWorksPage> {
+  const normalizedUrl = normalizeActorPageUrl(pageUrl);
+  const html = await fetchJavbusPageHtml(normalizedUrl);
+  return parseJavbusWorksPageHtml(html, normalizedUrl);
+}
+
+// —— 作品页磁力/种子资源嗅探 ——
+
+export interface JavbusWorkMagnet {
+  /** 完整 magnet:?xt=urn:btih:… 链接 */
+  link: string;
+  /** 资源名（优先磁链 dn= 参数，其次链接文本） */
+  name: string;
+  /** 体积文案，如 4.36GB */
+  size: string | null;
+  /** 分享日期 yyyy-mm-dd */
+  date: string | null;
+}
+
+export interface JavbusWorkTorrent {
+  link: string;
+  name: string;
+}
+
+export interface JavbusWorkResources {
+  pageUrl: string;
+  magnets: JavbusWorkMagnet[];
+  torrents: JavbusWorkTorrent[];
+}
+
+function magnetDisplayName(link: string, anchorText: string): string {
+  const dn = /(?:^|&)dn=([^&]+)/.exec(link);
+  if (dn) {
+    const name = decodeURIComponent(dn[1].replace(/\+/g, ' ')).trim();
+    if (name) return name;
+  }
+  return anchorText.trim() || link.slice(0, 60);
+}
+
+/** 从行 HTML 里取第一个磁力锚点的文本（磁力表第一格的名称）。 */
+function firstMagnetAnchorText(rowHtml: string): string {
+  const m = /<a\b[^>]*href\s*=\s*["']magnet:[^"']+["'][^>]*>([\s\S]*?)<\/a>/i.exec(rowHtml);
+  return m ? stripHtml(m[1]) : '';
+}
+
+function extractSizeDate(text: string): { size: string | null; date: string | null } {
+  return {
+    size: /([0-9]+(?:\.[0-9]+)?\s*[KMGT]i?B)/i.exec(text)?.[1]?.replace(/\s+/g, '') ?? null,
+    date: /\d{4}-\d{2}-\d{2}/.exec(text)?.[0] ?? null,
+  };
+}
+
+/**
+ * 从一段 HTML（影片详情页本体、#magnet-table 磁力表或磁力 AJAX 片段）解析磁力行。
+ * 实站磁力表为三列表格（磁力名稱/檔案大小/分享日期），磁力链接在行内每个单元格
+ * 重复出现；优先按行结构提取，非表格页面退回「磁力锚点 + 邻近文本」抽取。
+ */
+export function parseMagnetsFromHtml(html: string): JavbusWorkMagnet[] {
+  const tableMatch = /<table[^>]*\bid\s*=\s*["']?magnet-table["']?[^>]*>([\s\S]*?)<\/table>/i.exec(html);
+  const scope = tableMatch ? tableMatch[1] : html;
+  const magnets: JavbusWorkMagnet[] = [];
+  const seen = new Set<string>();
+  const rowRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let row: RegExpExecArray | null;
+  while ((row = rowRe.exec(scope)) !== null) {
+    const rowHtml = row[1];
+    const linkM = /href\s*=\s*["'](magnet:[^"']+)["']/i.exec(rowHtml);
+    if (!linkM) continue; // 表头行没有磁力链接
+    const link = decodeHtmlEntities(linkM[1]).trim();
+    if (!/^magnet:\?xt=urn:btih:/i.test(link)) continue;
+    const key = link.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const cells = rowHtml.split(/<td\b/i).slice(1)
+      .map(td => stripHtml(td.split(/<\/td>/i)[0] ?? ''));
+    // 名称取第一格磁力锚点文本（排除「高清」等角标），结构变化时退回 dn= 参数
+    const name = firstMagnetAnchorText(rowHtml)
+      || magnetDisplayName(link, '')
+      || cells[0]
+      || link.slice(0, 60);
+    const fromCells = extractSizeDate(`${cells[1] ?? ''} ${cells[2] ?? ''}`);
+    const fromRow = extractSizeDate(stripHtml(rowHtml));
+    magnets.push({
+      link,
+      name,
+      size: fromCells.size ?? fromRow.size,
+      date: fromCells.date ?? fromRow.date,
+    });
+  }
+  if (magnets.length > 0) return magnets;
+
+  // 兜底：无表结构时按「磁力锚点 + 邻近文本」抽取。行元数据通常紧随锚点之后、
+  // 下一个磁力锚点之前；个别镜像放在锚点之前，此时回退取上一个锚点之后的文本。
+  const matches: { link: string; text: string; index: number; end: number }[] = [];
+  const anchorRe = /<a\b[^>]*href\s*=\s*["'](magnet:[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = anchorRe.exec(html)) !== null) {
+    matches.push({ link: m[1], text: m[2], index: m.index, end: m.index + m[0].length });
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const link = decodeHtmlEntities(cur.link).trim();
+    if (!/^magnet:\?xt=urn:btih:/i.test(link)) continue;
+    const key = link.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const after = html.slice(cur.end, matches[i + 1]?.index ?? html.length);
+    const before = html.slice(matches[i - 1]?.end ?? 0, cur.index);
+    let contextText = stripHtml(after).slice(0, 200);
+    if (!/[KMGT]i?B/i.test(contextText) && !/\d{4}-\d{2}-\d{2}/.test(contextText)) {
+      contextText = stripHtml(before).slice(0, 200);
+    }
+    const size = /([0-9]+(?:\.[0-9]+)?\s*[KMGT]i?B)/i.exec(contextText)?.[1]?.replace(/\s+/g, '') ?? null;
+    const date = /\d{4}-\d{2}-\d{2}/.exec(contextText)?.[0] ?? null;
+    magnets.push({ link, name: magnetDisplayName(link, stripHtml(cur.text)), size, date });
+  }
+  return magnets;
+}
+
+/** 解析 .torrent / 站点种子下载链接（部分镜像提供）。 */
+export function parseTorrentsFromHtml(html: string, baseUrl: string): JavbusWorkTorrent[] {
+  const torrents: JavbusWorkTorrent[] = [];
+  const seen = new Set<string>();
+  const anchorRe = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = anchorRe.exec(html)) !== null) {
+    const href = decodeHtmlEntities(m[1]).trim();
+    if (/^magnet:/i.test(href)) continue;
+    if (!/\.torrent(?:$|[?#])/i.test(href) && !/\/torrent\//i.test(href)) continue;
+    let link: string;
+    try { link = new URL(href, baseUrl).href; }
+    catch { continue; }
+    if (!/^https?:/i.test(link) || seen.has(link)) continue;
+    seen.add(link);
+    const fileName = decodeURIComponent(href.split('/').pop() ?? '').replace(/\.(torrent).*$/i, '');
+    torrents.push({ link, name: stripHtml(m[2]) || fileName || '种子' });
+  }
+  return torrents;
+}
+
+/**
+ * 磁力表接口（站点 gallery.js 的加载逻辑）：页面 ready 时请求
+ * /ajax/uncledatoolsbyajax.php?gid=&lang=&img=&uc=&floor=随机数，
+ * 把响应行 append 进 #magnet-table。floor 是 1~1000 的随机缓存穿透参数。
+ * 参数值与站点脚本一致，从页面脚本的 var gid/uc/img/lang 里提取。
+ */
+function magnetAjaxUrl(url: URL, html: string): string | null {
+  const gid = /var\s+gid\s*=\s*(\d+)/.exec(html)?.[1];
+  if (!gid) return null;
+  const uc = /var\s+uc\s*=\s*["']?([\w-]+)/.exec(html)?.[1] ?? '';
+  const img = /var\s+img\s*=\s*["']([^"']+)["']/.exec(html)?.[1]
+    ?? /<a\s+class="bigImage"\s+href="([^"]+)"/i.exec(html)?.[1]
+    ?? '';
+  const lang = /var\s+lang\s*=\s*["']([^"']+)["']/.exec(html)?.[1] ?? 'zh';
+  const floor = Math.floor(Math.random() * 1000) + 1;
+  return `${url.origin}/ajax/uncledatoolsbyajax.php?gid=${gid}`
+    + `&lang=${encodeURIComponent(lang)}&img=${encodeURIComponent(img)}`
+    + `&uc=${encodeURIComponent(uc)}&floor=${floor}`;
+}
+
+/**
+ * 快路径：直连磁力接口一次往返即可拿到磁力行片段，比隐藏浏览器整页渲染
+ * 快一个量级。接口失败/被拦截/页面缺参数时返回 null，由调用方走隐藏浏览器兜底。
+ */
+async function fetchMagnetsViaAjax(url: URL, html: string): Promise<JavbusWorkMagnet[] | null> {
+  const ajaxUrl = magnetAjaxUrl(url, html);
+  if (!ajaxUrl) return null;
+  const t0 = Date.now();
+  try {
+    const fragment = await fetchText(ajaxUrl, 10000);
+    const magnets = parseMagnetsFromHtml(fragment);
+    log.info(TAG, `magnet ajax direct magnets=${magnets.length} ${Date.now() - t0}ms`);
+    return magnets.length > 0 ? magnets : null;
+  } catch (e: unknown) {
+    log.warn(TAG, `magnet ajax direct fail ${Date.now() - t0}ms`, String((e as Error)?.message ?? e));
+    return null;
+  }
+}
+
+/**
+ * 嗅探作品详情页的磁力/种子资源。
+ * 顺序：静态 HTML（少数镜像直出磁力表）→ 直连磁力接口（快）→
+ * 隐藏浏览器读最终 DOM（慢，兜底挑战页/接口参数缺失）。
+ */
+export async function sniffJavbusWorkResources(rawUrl: string): Promise<JavbusWorkResources> {
+  let url: URL;
+  try { url = new URL(rawUrl); }
+  catch { throw new Error('作品地址无效'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('作品地址必须使用 http 或 https');
+  }
+  const html = await fetchJavbusPageHtml(url.href);
+  let magnets = parseMagnetsFromHtml(html);
+  const torrents = parseTorrentsFromHtml(html, url.origin);
+  if (magnets.length === 0) {
+    const viaAjax = await fetchMagnetsViaAjax(url, html);
+    if (viaAjax) magnets = viaAjax;
+  }
+  if (magnets.length === 0) {
+    try {
+      const fragment = await fetchRenderedMagnetFragment(url.href);
+      magnets = parseMagnetsFromHtml(fragment);
+    } catch (e: unknown) {
+      log.warn(TAG, `rendered magnet fail url=${url.href}`, String((e as Error)?.message ?? e));
+    }
+  }
+  return { pageUrl: url.href, magnets, torrents };
 }

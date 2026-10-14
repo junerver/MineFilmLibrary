@@ -79,18 +79,35 @@ const javbusData: ActorJavbusData = {
 
 const openExternal = vi.fn(async () => true);
 const setFavorite = vi.fn(async (_id: number, _favorite: boolean) => true);
+const workResources = vi.fn(async () => ({
+  pageUrl: 'https://www.javbus.com/WEB-002',
+  magnets: [{ link: 'magnet:?xt=urn:btih:abcdef123', name: 'WEB-002 高清', size: '4.36GB', date: '2026-07-02' }],
+  torrents: [],
+}));
+const scrapeMoreWorks = vi.fn(async () => ({
+  works: javbusData.works,
+  added: 0,
+  worksPages: 1,
+  worksHasNext: false,
+}));
+const hasCodes = vi.fn(async (codes: string[]) => codes.filter(c => c === 'WEB-002'));
 let listActors: ActorRow[] = [actor];
 
 beforeEach(() => {
   openExternal.mockClear();
   setFavorite.mockClear();
+  workResources.mockClear();
+  scrapeMoreWorks.mockClear();
+  hasCodes.mockClear();
   listActors = [{ ...actor, is_favorite: 0 }];
   (window as any).mfl = {
+    library: { hasCodes },
     actors: {
       list: vi.fn(async () => listActors),
       films: vi.fn(async () => [localFilm]),
       getJavbusData: vi.fn(async () => javbusData),
       scrapeJavbus: vi.fn(async () => ({ ...javbusData, scrapedAt: 2 })),
+      scrapeMoreWorks,
       openExternal,
       setFavorite: vi.fn(async (id: number, favorite: boolean) => {
         listActors = listActors.map(a => a.id === id ? { ...a, is_favorite: favorite ? 1 : 0 } : a);
@@ -104,13 +121,14 @@ beforeEach(() => {
       lookupBuiltin: vi.fn(async () => null),
       searchBuiltin: vi.fn(async () => []),
     },
+    scrape: { workResources },
     settings: { get: vi.fn(async () => ({ privacy_mode: '0' })) },
   };
   sessionStorage.clear();
 });
 
 describe('ActorPage', () => {
-  it('separates local films and latest works, and opens a work externally', async () => {
+  it('separates local films and latest works, and expands resources on click', async () => {
     render(<MemoryRouter><ActorPage /></MemoryRouter>);
 
     fireEvent.click(await screen.findByText('本地演员'));
@@ -122,8 +140,38 @@ describe('ActorPage', () => {
     expect(await screen.findByText('网页最新作品')).toBeInTheDocument();
     expect(screen.queryByText('LOCAL-001')).not.toBeInTheDocument();
 
+    // 点击作品不再跳浏览器，而是嗅探磁力/种子资源并展开
     fireEvent.click(screen.getByText('网页最新作品'));
-    await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://www.javbus.com/WEB-002'));
+    await waitFor(() => expect(workResources).toHaveBeenCalledWith('https://www.javbus.com/WEB-002'));
+    expect(await screen.findByText('WEB-002 高清')).toBeInTheDocument();
+    expect(openExternal).not.toHaveBeenCalled();
+
+    // 本地库已存在的编号显示「本地」徽章
+    expect(hasCodes).toHaveBeenCalledWith(['WEB-002']);
+    expect(await screen.findByText('本地')).toBeInTheDocument();
+  });
+
+  it('loads more works and merges into the list', async () => {
+    scrapeMoreWorks.mockResolvedValueOnce({
+      works: [
+        ...javbusData.works,
+        { code: 'WEB-003', title: '早期作品', releaseDate: '2025-01-01', url: 'https://www.javbus.com/WEB-003' },
+      ],
+      added: 1,
+      worksPages: 2,
+      worksHasNext: false,
+    });
+    render(<MemoryRouter><ActorPage /></MemoryRouter>);
+    fireEvent.click(await screen.findByText('本地演员'));
+    fireEvent.click(await screen.findByRole('tab', { name: '最新作品 (1)' }));
+    expect(await screen.findByText('网页最新作品')).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: '加载更多' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    expect(await screen.findByText('早期作品')).toBeInTheDocument();
+    expect(scrapeMoreWorks).toHaveBeenCalledWith(7);
+    expect(await screen.findByText('已加载全部 2 部作品（2 页）')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '最新作品 (2)' })).toBeInTheDocument();
   });
 
   it('shows extended scraped metadata and keeps merge controls collapsed', async () => {

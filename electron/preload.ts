@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('mfl', {
     hardDelete: (id: number) => invoke('library:hardDelete', id),
     restore: (id: number) => invoke('library:restore', id),
     setFavorite: (id: number, favorite: boolean) => invoke('library:setFavorite', id, favorite),
+    hasCodes: (codes: string[]) => invoke('library:hasCodes', codes),
   },
   actors: {
     list: () => invoke('actors:list'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('mfl', {
     films: (id: number) => invoke('actors:films', id),
     getJavbusData: (id: number) => invoke('actors:getJavbusData', id),
     scrapeJavbus: (id: number) => invoke('actors:scrapeJavbus', id),
+    scrapeMoreWorks: (id: number) => invoke('actors:scrapeMoreWorks', id),
     openExternal: (url: string) => invoke('actors:openExternal', url),
     quickFind: (q: string) => invoke('actors:quickFind', q),
     lookupBuiltin: (name: string, extra?: string[]) => invoke('actors:lookupBuiltin', name, extra),
@@ -98,6 +100,7 @@ contextBridge.exposeInMainWorld('mfl', {
     getBatchStatus: () => invoke('scrape:getBatchStatus'),
     openLogDir: () => invoke('scrape:openLogDir'),
     getLogPath: () => invoke('scrape:getLogPath'),
+    workResources: (url: string) => invoke('scrape:workResources', url),
     onProgress: (cb: (p: any) => void) => {
       const h = (_e: unknown, payload: any) => cb(payload);
       ipcRenderer.on('scrape:progress', h);

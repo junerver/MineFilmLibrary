@@ -5,6 +5,9 @@ import {
   normalizeCodeForUrl,
   parseJavbusActorHtml,
   parseJavbusHtml,
+  parseJavbusWorksPageHtml,
+  parseMagnetsFromHtml,
+  parseTorrentsFromHtml,
   safeFileBase,
   formatScrapeNotes,
 } from '../electron/scraper/javbus';
@@ -149,5 +152,110 @@ describe('javbus helpers', () => {
   it('rejects age verification pages instead of treating them as actor data', () => {
     expect(() => parseJavbusActorHtml('<title>Age Verification JavBus</title><div id="ageVerify">x</div>', 'https://www.javbus.com/star/okq'))
       .toThrow(/年龄验证/);
+  });
+
+  it('flags works pagination by the 下一頁 anchor', () => {
+    const withNext = `
+      <a class="movie-box" href="/SSIS-001"><date>SSIS-001</date><date>2026-07-01</date></a>
+      <div id="next"><a href="/star/okq/2">下一頁</a></div>
+    `;
+    expect(parseJavbusActorHtml(withNext, 'https://www.javbus.com/star/okq').worksHasNext).toBe(true);
+    expect(parseJavbusWorksPageHtml(withNext, 'https://www.javbus.com/star/okq/2').hasNext).toBe(true);
+
+    const lastPage = `
+      <a class="movie-box" href="/SSIS-009"><date>SSIS-009</date><date>2020-01-01</date></a>
+      <div id="prev"><a href="/star/okq/1">上一頁</a></div>
+    `;
+    expect(parseJavbusWorksPageHtml(lastPage, 'https://www.javbus.com/star/okq/3')).toEqual({
+      works: [{ code: 'SSIS-009', title: 'SSIS-009', releaseDate: '2020-01-01', url: 'https://www.javbus.com/SSIS-009' }],
+      hasNext: false,
+    });
+  });
+
+  it('parseMagnetsFromHtml extracts rows from the real #magnet-table DOM', () => {
+    // 贴近实站 AJAX 注入的磁力表：三列（名稱/大小/日期），磁力链接在行内
+    // 每个单元格重复出现，名称格可能带「高清」角标，td 上有 onclick 属性。
+    const html = `
+      <div class="movie" style="padding:12px; margin-top:15px">
+        <table id="magnet-table" class="table table-condensed table-striped table-hover" style="margin-bottom:0;">
+          <tbody><tr style="font-weight:bold;">
+            <td>磁力名稱 <span class="glyphicon glyphicon-magnet"></span></td>
+            <td style="text-align:center;white-space:nowrap">檔案大小</td>
+            <td style="text-align:center;white-space:nowrap">分享日期</td>
+          </tr></tbody>
+          <tr onmouseover="this.style.backgroundColor='#F4F9FD';" height="35px">
+            <td width="70%" onclick="window.open('magnet:?xt=urn:btih:b945a0ee0906e68&amp;dn=WAAA-696-UC','_self')">
+              <a style="color:#333" rel="nofollow" title="滑鼠右鍵點擊並選擇【複製連結網址】" href="magnet:?xt=urn:btih:b945a0ee0906e68&amp;dn=WAAA-696-UC">
+              WAAA-696-UC </a><a class="btn btn-mini-new btn-primary disabled" title="包含高清HD的磁力連結">高清</a>
+            </td>
+            <td style="text-align:center;white-space:nowrap">
+              <a href="magnet:?xt=urn:btih:b945a0ee0906e68&amp;dn=WAAA-696-UC">3.26GB</a>
+            </td>
+            <td style="text-align:center;white-space:nowrap">
+              <a href="magnet:?xt=urn:btih:b945a0ee0906e68&amp;dn=WAAA-696-UC">2026-10-09</a>
+            </td>
+          </tr>
+          <tr onmouseover="this.style.backgroundColor='#F4F9FD';" height="35px">
+            <td width="70%">
+              <a href="magnet:?xt=urn:btih:13909334754d2785302d47404c3acc47e82c67ec&amp;dn=WAAA-696-C+JULIA">
+              WAAA-696-C 「先生って雑魚マ〇コだな」 JULIA </a><a class="btn btn-mini-new btn-primary disabled" title="包含高清HD的磁力連結">高清</a>
+            </td>
+            <td><a href="magnet:?xt=urn:btih:13909334754d2785302d47404c3acc47e82c67ec&amp;dn=WAAA-696-C+JULIA">7.82GB</a></td>
+            <td><a href="magnet:?xt=urn:btih:13909334754d2785302d47404c3acc47e82c67ec&amp;dn=WAAA-696-C+JULIA">2026-09-28</a></td>
+          </tr>
+        </table>
+        <div id="movie-loading" style="display: none;">
+          <font class="ajax-text">讀取中...</font>
+        </div>
+      </div>
+    `;
+    const magnets = parseMagnetsFromHtml(html);
+    expect(magnets).toHaveLength(2);
+    expect(magnets[0]).toEqual({
+      link: 'magnet:?xt=urn:btih:b945a0ee0906e68&dn=WAAA-696-UC',
+      name: 'WAAA-696-UC',
+      size: '3.26GB',
+      date: '2026-10-09',
+    });
+    expect(magnets[1].link).toBe('magnet:?xt=urn:btih:13909334754d2785302d47404c3acc47e82c67ec&dn=WAAA-696-C+JULIA');
+    expect(magnets[1].name).toBe('WAAA-696-C 「先生って雑魚マ〇コだな」 JULIA');
+    expect(magnets[1].size).toBe('7.82GB');
+    expect(magnets[1].date).toBe('2026-09-28');
+  });
+
+  it('parseMagnetsFromHtml extracts btih magnets with name/size/date and dedupes', () => {
+    const html = `
+      <div class="row">
+        <a href="magnet:?xt=urn:btih:AAAA1111&dn=WEB-002+4K">WEB-002 4K</a>
+        <span>2026-07-02</span> <span>4.36GB</span>
+      </div>
+      <div class="row">
+        <a href="magnet:?xt=urn:btih:bbbb2222">第二条</a>
+        <span>1.2GB 2026-06-01</span>
+      </div>
+      <a href="magnet:?xt=urn:btih:AAAA1111&dn=WEB-002+4K">重复链接</a>
+      <a href="magnet:?xt=urn:sha1:notbtih">非 btih 忽略</a>
+    `;
+    const magnets = parseMagnetsFromHtml(html);
+    expect(magnets).toHaveLength(2);
+    expect(magnets[0]).toEqual({
+      link: 'magnet:?xt=urn:btih:AAAA1111&dn=WEB-002+4K',
+      name: 'WEB-002 4K',
+      size: '4.36GB',
+      date: '2026-07-02',
+    });
+    expect(magnets[1].name).toBe('第二条');
+    expect(magnets[1].size).toBe('1.2GB');
+    expect(magnets[1].date).toBe('2026-06-01');
+  });
+
+  it('parseTorrentsFromHtml resolves .torrent links and ignores magnets', () => {
+    const html = `
+      <a href="/download/WEB-002.torrent">WEB-002 种子</a>
+      <a href="magnet:?xt=urn:btih:AAAA1111">磁力不算种子</a>
+      <a href="/page">普通链接</a>
+    `;
+    const torrents = parseTorrentsFromHtml(html, 'https://www.javbus.com');
+    expect(torrents).toEqual([{ link: 'https://www.javbus.com/download/WEB-002.torrent', name: 'WEB-002 种子' }]);
   });
 });

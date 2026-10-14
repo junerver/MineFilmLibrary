@@ -165,4 +165,18 @@ export function registerLibraryIpc() {
       .run(flag, nowMs(), id);
     return info.changes > 0;
   });
+
+  // 查询哪些影片编号已存在于本地库（不含回收站）。films.code 存的是去掉 C/U
+  // 后缀的原始大小写，这里统一大写做不区分大小写的精确匹配；返回命中的大写编号。
+  ipcMain.handle('library:hasCodes', (_e, codes: unknown) => {
+    const list = Array.isArray(codes)
+      ? Array.from(new Set(codes.map(c => String(c ?? '').trim().toUpperCase()).filter(Boolean)))
+      : [];
+    if (!list.length) return [];
+    const placeholders = list.map(() => '?').join(',');
+    const rows = getDb().prepare(
+      `SELECT DISTINCT UPPER(code) AS c FROM films WHERE is_deleted=0 AND UPPER(code) IN (${placeholders})`,
+    ).all(...list) as { c: string }[];
+    return rows.map(r => r.c);
+  });
 }

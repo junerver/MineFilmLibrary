@@ -14,6 +14,8 @@ export interface MflApi {
     hardDelete(id: number): Promise<boolean>;
     restore(id: number): Promise<boolean>;
     setFavorite(id: number, favorite: boolean): Promise<boolean>;
+    /** 查询哪些影片编号已存在于本地库（不含回收站），返回命中的大写编号 */
+    hasCodes(codes: string[]): Promise<string[]>;
   };
   actors: {
     list(): Promise<T.ActorRow[]>;
@@ -26,6 +28,8 @@ export interface MflApi {
     films(id: number): Promise<T.FilmRow[]>;
     getJavbusData(id: number): Promise<T.ActorJavbusData | null>;
     scrapeJavbus(id: number): Promise<T.ActorJavbusData & { scrapedAt: number }>;
+    /** 追加嗅探演员作品列表下一页，合并去重后回写；返回合并后的列表 */
+    scrapeMoreWorks(id: number): Promise<T.ScrapeMoreWorksResult>;
     openExternal(url: string): Promise<boolean>;
     quickFind(q: string): Promise<{ id: number; name: string }[]>;
     /** 内置库精确/别名候选匹配 */
@@ -102,6 +106,8 @@ export interface MflApi {
     getBatchStatus(): Promise<T.BatchScrapeProgress>;
     openLogDir(): Promise<{ ok: boolean; path?: string; error?: string; currentFile?: string | null }>;
     getLogPath(): Promise<{ dir: string | null; file: string | null }>;
+    /** 嗅探作品详情页磁力/种子资源 */
+    workResources(url: string): Promise<T.WorkResources>;
     onProgress(cb: (p: T.ScrapeProgressEvent) => void): () => void;
     onBatchProgress(cb: (p: T.BatchScrapeProgress) => void): () => void;
   };

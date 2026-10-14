@@ -44,6 +44,35 @@ export interface ActorJavbusData {
   pageUrl: string;
   profile: ActorJavbusProfile;
   works: ActorJavbusWork[];
+  /** 已嗅探的作品列表页数（从 1 起；旧数据缺省视为 1） */
+  worksPages?: number;
+  /** 列表是否还有下一页（旧数据缺省视为有，点加载后由主进程判定） */
+  worksHasNext?: boolean;
+}
+
+/** 作品详情页嗅探到的磁力资源 */
+export interface WorkMagnet {
+  link: string;
+  name: string;
+  size: string | null;
+  date: string | null;
+}
+/** 作品详情页嗅探到的种子下载链接 */
+export interface WorkTorrent {
+  link: string;
+  name: string;
+}
+export interface WorkResources {
+  pageUrl: string;
+  magnets: WorkMagnet[];
+  torrents: WorkTorrent[];
+}
+/** actors:scrapeMoreWorks 返回：合并后的完整作品列表 */
+export interface ScrapeMoreWorksResult {
+  works: ActorJavbusWork[];
+  added: number;
+  worksPages: number;
+  worksHasNext: boolean;
 }
 export interface ActorRow {
   id: number;

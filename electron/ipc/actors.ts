@@ -12,7 +12,7 @@ import {
   applyBuiltinActressToActor,
   scheduleBuiltinActorFill,
 } from '../db/queries';
-import { normalizeActorPageUrl, scrapeJavbusActorPage } from '../scraper/javbus';
+import { normalizeActorPageUrl, scrapeJavbusActorPage, scrapeJavbusWorksPage, type JavbusActorScrapeResult } from '../scraper/javbus';
 import { lookupActressByCandidates, searchActress } from '../data/actorLookup';
 import { toTraditional } from '../util/zhConvert';
 import type { ActorRow } from '../util/types';
@@ -156,6 +156,35 @@ export function registerActorIpc() {
       addActorAlias(db, actorId, scrapedName);
     }
     return { ...scraped, scrapedAt };
+  });
+
+  // 追加嗅探演员作品列表的下一页（首页由 actors:scrapeJavbus 刮削）。
+  // 与已存 works 按 code|url 去重合并后回写 javbus_data_json，worksPages 递增。
+  ipcMain.handle('actors:scrapeMoreWorks', async (_e, actorId: number) => {
+    const db = getDb();
+    const actor = db.prepare('SELECT id, javbus_url, javbus_data_json FROM actors WHERE id=?')
+      .get(actorId) as { id: number; javbus_url: string | null; javbus_data_json: string | null } | undefined;
+    if (!actor) throw new Error('演员不存在');
+    if (!actor.javbus_url) throw new Error('请先配置该演员的 JavBus 主页地址');
+    let data: JavbusActorScrapeResult | null = null;
+    try { data = actor.javbus_data_json ? JSON.parse(actor.javbus_data_json) as JavbusActorScrapeResult : null; }
+    catch { data = null; }
+    if (!data || !Array.isArray(data.works)) throw new Error('请先点击「刮削演员主页」获取首页作品');
+    const listBase = actor.javbus_url.replace(/\/\d+$/, ''); // 主页地址可能直接填了某页
+    const nextPage = Math.max(1, data.worksPages ?? 1) + 1;
+    const page = await scrapeJavbusWorksPage(`${listBase}/${nextPage}`);
+    const seen = new Set(data.works.map(w => `${w.code ?? ''}|${w.url}`));
+    const fresh = page.works.filter(w => !seen.has(`${w.code ?? ''}|${w.url}`));
+    const worksHasNext = page.hasNext && fresh.length > 0;
+    const updated: JavbusActorScrapeResult = {
+      ...data,
+      works: [...data.works, ...fresh],
+      worksPages: nextPage,
+      worksHasNext,
+    };
+    db.prepare('UPDATE actors SET javbus_data_json=?, updated_at=? WHERE id=?')
+      .run(JSON.stringify(updated), nowMs(), actorId);
+    return { works: updated.works, added: fresh.length, worksPages: nextPage, worksHasNext };
   });
 
   ipcMain.handle('actors:openExternal', async (_e, rawUrl: string) => {

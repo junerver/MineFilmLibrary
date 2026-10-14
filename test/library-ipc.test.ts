@@ -142,3 +142,19 @@ describe('library favorites', () => {
     expect(empty.total).toBe(0);
   });
 });
+
+describe('library hasCodes', () => {
+  it('returns existing codes case-insensitively and excludes trash', () => {
+    addFilm('WAAA-696');
+    addFilm('ssis-100');
+    addFilm('TRASHED-001', 1);
+
+    const hasCodes = mocks.handlers.get('library:hasCodes');
+    expect(hasCodes).toBeDefined();
+    // 大小写不敏感、去重、忽略回收站；返回大写编号
+    expect(hasCodes?.({}, ['waaa-696', 'WAAA-696', 'SSIS-100', 'MISSING-9', 'TRASHED-001', '']))
+      .toEqual(['WAAA-696', 'SSIS-100']);
+    expect(hasCodes?.({}, [])).toEqual([]);
+    expect(hasCodes?.({}, 'not-an-array')).toEqual([]);
+  });
+});

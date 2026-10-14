@@ -18,6 +18,7 @@ import {
   fetchBinary,
   safeFileBase,
   formatScrapeNotes,
+  sniffJavbusWorkResources,
 } from '../scraper/javbus';
 import * as log from '../util/logger';
 import { getCurrentLogFile, getLogDir } from '../util/logger';
@@ -541,4 +542,11 @@ export function registerScrapeIpc() {
     dir: getLogDir(),
     file: getCurrentLogFile(),
   }));
+
+  // 嗅探作品详情页的磁力/种子资源（演员页「最新作品」点击展开用）。
+  ipcMain.handle('scrape:workResources', async (_e, rawUrl: string) => {
+    const r = await sniffJavbusWorkResources(rawUrl);
+    log.info(TAG, `work resources url=${rawUrl} magnets=${r.magnets.length} torrents=${r.torrents.length}`);
+    return r;
+  });
 }

@@ -40,7 +40,7 @@ npm install
 # 为 Electron 编译 better-sqlite3（开发启动前必须）
 npm run rebuild
 
-# 启动：Vite(5173) + Electron
+# 启动：Vite(5199) + Electron
 npm run dev
 ```
 
@@ -259,8 +259,8 @@ A: 库里是旧绝对路径。把影片放到相同路径，或重新扫描新�
 **Q: JavBus 刮削超时？**  
 A: 主进程走系统代理；确认本机代理可用。预览图在 `pics.dmm.co.jp` 可能单独超时，元数据仍可能写入。详见日志。
 
-**Q: 开发时 5173 被占用？**  
-A: 关掉残留的 `node`/`electron` 进程后再 `npm run dev`。
+**Q: 开发时 5199 端口被占用？**  
+A: 本项目开发端口为 5199（避开 Vite 默认 5173）。被占用时关掉残留的 `node`/`electron` 进程后再 `npm run dev`。
 
 ---
 

@@ -83,7 +83,7 @@ test/                     # vitest (Node env for DB/scanner; jsdom for React)
 | Electron dev / dist | `npm run rebuild` (`electron-rebuild`) |
 | vitest / Node | `npm rebuild better-sqlite3` |
 
-If rebuild fails with EBUSY/EPERM on Windows: kill all `electron.exe` and the Vite port (often 5173), wait, retry.
+If rebuild fails with EBUSY/EPERM on Windows: kill all `electron.exe` and the Vite port (5199, see `vite.config.ts`), wait, retry.
 
 After **main-process** TypeScript changes, **restart Electron** (Vite HMR does not reload main/preload). Renderer-only changes can HMR.
 

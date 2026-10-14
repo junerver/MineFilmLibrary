@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { ActorJavbusData, ActorRow, FilmRow } from '../api/types';
+import type { ActorJavbusData, ActorRow, FilmRow, ScrapeMoreWorksResult, WorkResources } from '../api/types';
 import FilmTable from '../components/FilmTable';
 import { useToast } from '../components/Toaster';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -1051,7 +1051,12 @@ export default function ActorPage() {
               </div>
             ) : (
               <div role="tabpanel" aria-label="最新作品">
-                <ActorWorksPanel data={actorJavbusData} onOpen={openActorWork} />
+                <ActorWorksPanel
+                  key={selected ?? 'none'}
+                  actorId={selected}
+                  data={actorJavbusData}
+                  onData={setActorJavbusData}
+                />
               </div>
             )}
           </>
@@ -1091,53 +1096,284 @@ function ActorTabButton({ active, onClick, children }: { active: boolean; onClic
   );
 }
 
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // file:// 等场景 clipboard API 可能被拒；退回 execCommand 兜底
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+
 function ActorWorksPanel({
+  actorId,
   data,
-  onOpen,
+  onData,
 }: {
+  actorId: number | null;
   data: ActorJavbusData | null;
-  onOpen: (url: string) => void;
+  onData: (d: ActorJavbusData) => void;
 }) {
+  const toast = useToast();
+  // 展开状态与资源缓存以作品 URL 为键；面板按 actorId 重建（key），换演员即重置。
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [resLoading, setResLoading] = useState<string | null>(null);
+  const [resources, setResources] = useState<Record<string, WorkResources | { error: string }>>({});
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreBusyRef = useRef(false);
+  // 本地库已存在的影片编号（大写）；命中的作品行显示「本地」徽章。
+  const [localCodes, setLocalCodes] = useState<Set<string>>(new Set());
+
   const works = Array.isArray(data?.works) ? data.works : [];
+  const hasMore = works.length > 0 && (data?.worksHasNext ?? true);
+
+  useEffect(() => {
+    const codes = Array.from(new Set(works.map(w => (w.code ?? '').trim()).filter(Boolean)));
+    if (codes.length === 0) {
+      setLocalCodes(new Set());
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const hit = await mfl().library.hasCodes(codes) as string[];
+        if (!cancelled) setLocalCodes(new Set(hit.map(c => String(c).toUpperCase())));
+      } catch {
+        // 查询失败时仅缺少徽章，不影响列表本身
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [works]);
+
+  const loadMore = async () => {
+    if (!actorId || !data || loadMoreBusyRef.current) return;
+    loadMoreBusyRef.current = true;
+    setLoadingMore(true);
+    try {
+      const r = await mfl().actors.scrapeMoreWorks(actorId) as ScrapeMoreWorksResult;
+      onData({ ...data, works: r.works, worksPages: r.worksPages, worksHasNext: r.worksHasNext });
+      if (r.added === 0) toast.push({ text: '没有更多新作品了', kind: 'info' });
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    } finally {
+      loadMoreBusyRef.current = false;
+      setLoadingMore(false);
+    }
+  };
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
+
+  // 下拉到列表底部时自动嗅探下一页（sentinel 进入视口即触发）。
+  // 主内容区 #mfl-main-scroll 是滚动容器，默认 viewport root 同样能观察到。
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    // 无 IntersectionObserver 的环境（如 jsdom）退化为手动「加载更多」按钮
+    if (typeof IntersectionObserver === 'undefined') return;
+    const ob = new IntersectionObserver(
+      entries => { if (entries.some(e => e.isIntersecting)) void loadMoreRef.current(); },
+      { rootMargin: '160px' },
+    );
+    ob.observe(el);
+    return () => ob.disconnect();
+  }, [hasMore, works.length]);
+
+  const toggleWork = async (url: string) => {
+    if (expanded === url) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(url);
+    if (resources[url] || resLoading === url) return;
+    setResLoading(url);
+    try {
+      const r = await mfl().scrape.workResources(url) as WorkResources;
+      setResources(prev => ({ ...prev, [url]: r }));
+    } catch (e: unknown) {
+      setResources(prev => ({ ...prev, [url]: { error: String((e as Error)?.message ?? e) } }));
+    } finally {
+      setResLoading(null);
+    }
+  };
+
+  const copyLink = async (text: string, label: string) => {
+    await copyText(text);
+    toast.push({ text: `${label}已复制到剪贴板`, kind: 'success' });
+  };
+
+  const openInBrowser = async (url: string) => {
+    try {
+      await mfl().actors.openExternal(url);
+    } catch (e: unknown) {
+      toast.push({ text: String((e as Error)?.message ?? e), kind: 'error' });
+    }
+  };
+
   if (!data) {
     return <div style={{ color: '#666', fontSize: 12, padding: 8 }}>尚未刮削演员主页，请先点击“刮削演员主页”。</div>;
   }
   if (works.length === 0) {
     return <div style={{ color: '#666', fontSize: 12, padding: 8 }}>未发现最新作品。</div>;
   }
+  const gridColumns = '110px 105px minmax(0, 1fr) 24px';
   return (
     <section>
-      <div style={{ color: '#888', fontSize: 12, marginBottom: 6 }}>点击作品后使用系统浏览器打开 JavBus 页面</div>
+      <div style={{ color: '#888', fontSize: 12, marginBottom: 6 }}>
+        点击作品展开磁力/种子资源，点击资源行复制链接可直接用于下载
+      </div>
       <div role="list" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {works.map((work, index) => (
+        {works.map((work, index) => {
+          const isOpen = expanded === work.url;
+          const res = resources[work.url];
+          return (
+            <div
+              key={`${work.url}:${index}`}
+              role="listitem"
+              style={{
+                border: `1px solid ${isOpen ? '#4a5a78' : '#333'}`,
+                borderRadius: 3,
+                background: '#202020',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => void toggleWork(work.url)}
+                title={work.url}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: gridColumns,
+                  gap: 8,
+                  alignItems: 'center',
+                  width: '100%',
+                  minHeight: 34,
+                  padding: '6px 8px',
+                  textAlign: 'left',
+                  border: 0,
+                  background: 'transparent',
+                  color: '#ddd',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#9fc4ff' }}>
+                  {work.code || '—'}
+                  {work.code && localCodes.has(work.code.toUpperCase()) && (
+                    <span
+                      title="本地库已有该编号影片"
+                      style={{
+                        marginLeft: 6,
+                        padding: '0 5px',
+                        borderRadius: 3,
+                        background: '#1d3a24',
+                        color: '#7fd49a',
+                        fontSize: 10,
+                        lineHeight: '16px',
+                      }}
+                    >
+                      本地
+                    </span>
+                  )}
+                </span>
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#999' }}>{work.releaseDate || '—'}</span>
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{work.title}</span>
+                <span aria-hidden="true" style={{ color: '#8ab4f8', textAlign: 'center' }}>{isOpen ? '▾' : '▸'}</span>
+              </button>
+              {isOpen && (
+                <div style={{ borderTop: '1px solid #333', padding: '6px 10px', background: '#191919' }}>
+                  {resLoading === work.url && !res && (
+                    <div style={{ color: '#888', fontSize: 12, padding: '2px 0' }}>嗅探磁力/种子资源中…</div>
+                  )}
+                  {res && 'error' in res && (
+                    <div style={{ color: '#e08080', fontSize: 12, padding: '2px 0' }}>嗅探失败：{res.error}</div>
+                  )}
+                  {res && !('error' in res) && res.magnets.length === 0 && res.torrents.length === 0 && (
+                    <div style={{ color: '#888', fontSize: 12, padding: '2px 0' }}>未嗅探到可用资源</div>
+                  )}
+                  {res && !('error' in res) && res.magnets.map(mg => (
+                    <div
+                      key={mg.link}
+                      onClick={() => void copyLink(mg.link, '磁力链接')}
+                      title="点击复制磁力链接"
+                      style={{
+                        display: 'flex',
+                        gap: 10,
+                        alignItems: 'center',
+                        padding: '3px 0',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                      }}
+                    >
+                      <span style={{ color: '#d0a060', flexShrink: 0 }}>磁力</span>
+                      <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ccc' }}>{mg.name}</span>
+                      {mg.size && <span style={{ color: '#888', flexShrink: 0 }}>{mg.size}</span>}
+                      {mg.date && <span style={{ color: '#666', flexShrink: 0 }}>{mg.date}</span>}
+                      <span style={{ color: '#6aa8ff', flexShrink: 0 }}>复制</span>
+                    </div>
+                  ))}
+                  {res && !('error' in res) && res.torrents.map(t => (
+                    <div
+                      key={t.link}
+                      style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '3px 0', fontSize: 12 }}
+                    >
+                      <span style={{ color: '#80c080', flexShrink: 0 }}>种子</span>
+                      <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#ccc' }}>{t.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => void copyLink(t.link, '种子链接')}
+                        style={{ border: 0, background: 'transparent', color: '#6aa8ff', cursor: 'pointer', fontSize: 12, padding: 0 }}
+                      >
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void openInBrowser(t.link)}
+                        style={{ border: 0, background: 'transparent', color: '#6aa8ff', cursor: 'pointer', fontSize: 12, padding: 0 }}
+                      >
+                        浏览器下载
+                      </button>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px dashed #2c2c2c' }}>
+                    <button
+                      type="button"
+                      onClick={() => void openInBrowser(work.url)}
+                      style={{ border: 0, background: 'transparent', color: '#777', cursor: 'pointer', fontSize: 11, padding: 0 }}
+                    >
+                      在浏览器打开作品页 ↗
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div ref={sentinelRef} style={{ height: 1 }} aria-hidden="true" />
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center', padding: '10px 0 4px' }}>
+        {loadingMore && <span style={{ color: '#888', fontSize: 12 }}>嗅探更多作品中…</span>}
+        {!loadingMore && hasMore && (
           <button
-            key={`${work.url}:${index}`}
             type="button"
-            role="listitem"
-            onClick={() => onOpen(work.url)}
-            title={work.url}
+            onClick={() => void loadMore()}
             style={{
-              display: 'grid',
-              gridTemplateColumns: '110px 105px minmax(0, 1fr) 24px',
-              gap: 8,
-              alignItems: 'center',
-              width: '100%',
-              minHeight: 34,
-              padding: '6px 8px',
-              textAlign: 'left',
-              border: '1px solid #333',
-              borderRadius: 3,
-              background: '#202020',
-              color: '#ddd',
+              padding: '4px 16px',
+              border: '1px solid #3a4a5a',
+              borderRadius: 4,
+              background: '#203040',
+              color: '#9fc4ff',
               cursor: 'pointer',
+              fontSize: 12,
             }}
           >
-            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#9fc4ff' }}>{work.code || '—'}</span>
-            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#999' }}>{work.releaseDate || '—'}</span>
-            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{work.title}</span>
-            <span aria-hidden="true" style={{ color: '#8ab4f8', textAlign: 'center' }}>↗</span>
+            加载更多
           </button>
-        ))}
+        )}
+        {!hasMore && <span style={{ color: '#666', fontSize: 12 }}>已加载全部 {works.length} 部作品（{data.worksPages ?? 1} 页）</span>}
       </div>
     </section>
   );

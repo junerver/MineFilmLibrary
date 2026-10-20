@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
 import type { ScanRootRow, ScanRunRow } from '../../api/types';
 import { useToast } from '../../components/Toaster';
-import { clampInt, mfl } from './settingsHelpers';
+import { clampInt, flagOn, mfl } from './settingsHelpers';
 
 interface ScanResultStats {
   dir_added: number;
   dir_updated: number;
   dir_removed: number;
   code_repaired: number;
+  wrap_seen: number;
+  wrap_into_existing: number;
+  wrap_into_new: number;
+  wrap_skipped: number;
+  wrap_failed: number;
   scrape_candidates: number;
   scrape_resumed: number;
   scrape_deferred: number;
@@ -55,6 +60,7 @@ export default function ScanSettingsPanel() {
   const [newPath, setNewPath] = useState('');
   const [parentType, setParentTypeState] = useState('actor');
   const [scanMaxDepth, setScanMaxDepth] = useState('3');
+  const [wrapLoose, setWrapLooseState] = useState(false);
   const [driveMappings, setDriveMappings] = useState<DriveMappingRow[]>([]);
   const [newMapFrom, setNewMapFrom] = useState('');
   const [newMapTo, setNewMapTo] = useState('');
@@ -69,6 +75,7 @@ export default function ScanSettingsPanel() {
     mfl().settings.get().then((s: Record<string, string>) => {
       setParentTypeState(s.default_parent_type ?? 'actor');
       setScanMaxDepth(s.scan_max_depth ?? '3');
+      setWrapLooseState(flagOn(s.scan_wrap_loose_videos, false));
       setDriveMappings(parseDriveMappings(s.drive_mappings));
     }).catch(() => {});
   }, []);
@@ -84,6 +91,12 @@ export default function ScanSettingsPanel() {
     await mfl().settings.set('scan_max_depth', String(depth));
     setScanMaxDepth(String(depth));
     toast.push({ text: `扫描最大深度已保存：${depth} 层`, kind: 'success' });
+  };
+
+  const setWrapLoose = async (v: boolean) => {
+    await mfl().settings.set('scan_wrap_loose_videos', v ? '1' : '0');
+    setWrapLooseState(v);
+    toast.push({ text: v ? '已开启：下次扫描前自动包装裸视频' : '已关闭：扫描不再移动任何文件', kind: 'success' });
   };
 
   const saveDriveMappings = async (rows: DriveMappingRow[]) => {
@@ -134,6 +147,9 @@ export default function ScanSettingsPanel() {
       toast.push({
         text: `扫描完成：新增 ${stats.dir_added}，文件变化 ${stats.dir_updated}，移除 ${stats.dir_removed}（扫描不删除记录）`
           + `，修正编号 ${stats.code_repaired}`
+          + (stats.wrap_seen > 0
+            ? `；包装裸视频：发现 ${stats.wrap_seen}，移入已有目录 ${stats.wrap_into_existing}，移入新目录 ${stats.wrap_into_new}，跳过 ${stats.wrap_skipped}，失败 ${stats.wrap_failed}`
+            : '')
           + `；待刮削 ${stats.scrape_candidates}（续刮 ${stats.scrape_resumed}），成功 ${stats.scrape_ok}，失败 ${stats.scrape_fail}，跳过 ${stats.scrape_skipped}`
           + (stats.scrape_deferred ? `，另有 ${stats.scrape_deferred} 部因已有批量任务而延后` : '')
           + `；目录兜底 ${stats.fallback_applied}，兜底失败 ${stats.fallback_fail}`,
@@ -171,6 +187,20 @@ export default function ScanSettingsPanel() {
       </div>
       <div style={{ color: '#666', fontSize: 11, marginTop: 4 }}>
         默认 3 层：扫描只登记路径、编号和文件清单；新编号随后自动刮削，失败时才按目录名兜底。
+      </div>
+
+      <label style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 12 }}>
+        <input
+          type="checkbox"
+          checked={wrapLoose}
+          onChange={e => void setWrapLoose(e.target.checked)}
+        />
+        自动包装裸视频（扫描时）
+      </label>
+      <div style={{ color: '#666', fontSize: 11, marginTop: 4, maxWidth: 640 }}>
+        开启后，每次扫描开始前会把影片列表目录（扫描根、演员/题材等分组目录）第一层散落的视频文件按编号归档：
+        从文件名开头提取编号（如 HMN-260、FC2-PPV-1218169），移入同目录下已有的对应影片目录，没有则新建以编号命名的目录再移入。
+        无编号、同编号匹配到多个目录、目标目录已有同名文件时保持原样不动；影片目录内部的文件不受影响。默认关闭。
       </div>
 
       <h3 style={{ marginTop: 16 }}>盘符映射</h3>

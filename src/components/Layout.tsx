@@ -54,7 +54,7 @@ export default function Layout() {
               ? `扫描完成（${progress.current} 个目录）`
               : progress.flash === 'error'
                 ? `扫描失败：${progress.errorMessage ?? '未知错误'}`
-                : `${progress.stage === 'scrape' ? '新片刮削中' : progress.stage === 'fallback' ? '应用目录兜底' : '扫描中'} ${progress.current}/${progress.total}`
+                : `${progress.stage === 'wrap' ? '包装裸视频' : progress.stage === 'scrape' ? '新片刮削中' : progress.stage === 'fallback' ? '应用目录兜底' : '扫描中'} ${progress.current}/${progress.total}`
                   + (progress.currentPath ? ` — ${progress.currentPath}` : '')}
           </div>
         )}

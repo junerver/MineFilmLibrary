@@ -61,7 +61,7 @@ function looksLikeActorOrGenre(name: string): boolean {
   return /^\d+-.+/.test(name);
 }
 
-function looksLikeFilmDir(name: string): boolean {
+export function looksLikeFilmDir(name: string): boolean {
   const txt = name.trim();
   // 原始两级启发:以"字母+数字"打头 (ABC-123 / abc_123) 或含 [标签]。
   if (/^[A-Za-z]+[-_]?[0-9]+/.test(txt) || /\[[^\]]+\]/.test(txt)) return true;

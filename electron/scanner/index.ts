@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3';
 import path from 'node:path';
 import { parseFilmDirName, parseParentDirName } from './parser';
 import { listFilmFiles, walkFilmDirs } from './walker';
+import { wrapLooseVideos } from './wrapLoose';
+import type { WrapLooseStats } from './wrapLoose';
 import { nowMs, tx } from '../db/dao';
 import {
   upsertActorByName, upsertGenreByName,
@@ -12,7 +14,7 @@ import { loadDriveMappings, realToVirtual, virtualToReal } from '../util/driveMa
 import type { ParsedDir, ScanMode } from '../util/types';
 
 export interface ProgressCb { (p: ScanProgress): void; }
-export interface ScanProgress { stage: 'scan' | 'scrape' | 'fallback'; current: number; total: number; currentPath: string; }
+export interface ScanProgress { stage: 'wrap' | 'scan' | 'scrape' | 'fallback'; current: number; total: number; currentPath: string; }
 
 export interface ScannerOptions {
   mode: ScanMode;
@@ -20,6 +22,8 @@ export interface ScannerOptions {
   defaultType: 'actor' | 'genre';
   /** 影片目录相对扫描根目录的最大层级，默认 3。 */
   maxDepth?: number;
+  /** 扫描前把影片列表目录第一层散落的裸视频按编号包装进影片目录。 */
+  wrapLoose?: boolean;
   onProgress?: ProgressCb;
 }
 
@@ -45,6 +49,8 @@ export interface ScanAddedFilm {
 
 export interface ScanResult extends ScanStats {
   addedFilms: ScanAddedFilm[];
+  /** 仅在 wrapLoose 开启时返回裸视频包装统计。 */
+  wrap?: WrapLooseStats | null;
 }
 
 function shouldRepairStoredCode(
@@ -69,6 +75,15 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
   const mappings = loadDriveMappings(db);
   const realRoot = virtualToReal(opts.rootPath, mappings);
   const toVirtual = (p: string) => realToVirtual(p, mappings);
+  // 包装裸视频要在遍历之前做：新建/移入的影片目录才能被同一次 walkFilmDirs 发现。
+  const wrap = opts.wrapLoose
+    ? wrapLooseVideos(realRoot, {
+      maxDepth: opts.maxDepth,
+      onProgress: p => opts.onProgress?.({
+        stage: 'wrap', current: p.current, total: p.total, currentPath: toVirtual(p.currentPath),
+      }),
+    })
+    : null;
   const visits = Array.from(walkFilmDirs(realRoot, opts.maxDepth));
 
   // Windows 路径大小写不敏感。数据库中可能保留了旧路径的不同大小写，
@@ -182,7 +197,7 @@ export function runScan(db: Database.Database, opts: ScannerOptions): ScanResult
   // 增量扫描走同一路径，因为增量也可能让某个 code 从 1 份变 2 份（或反之）。
   recomputeCodeCounts(db);
 
-  return { ...stats, addedFilms };
+  return { ...stats, addedFilms, wrap };
 }
 
 /**

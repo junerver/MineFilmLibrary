@@ -132,11 +132,11 @@ export interface ScanRootRow { id: number; path: string; label: string | null; l
 export interface ScanRunRow { id: number; root_id: number; mode: 'full'|'incremental'; started_at: number; finished_at: number|null; dir_seen: number; dir_added: number; dir_updated: number; dir_removed: number; status: 'running'|'done'|'error'; error_message: string|null; root_path?: string; }
 export interface CoverResult { kind: 'blob' | 'file'; mime: string; base64: string; }
 
-// 扫描任务包括目录发现、首次入库刮削和失败兜底；done/error 是终止事件。
+// 扫描任务包括裸视频包装、目录发现、首次入库刮削和失败兜底；done/error 是终止事件。
 // runId 用于把事件绑定到当前扫描任务（前端目前不区分，留着供后续多任务场景用）。
 export interface ScanProgressEvent {
   runId?: number;
-  stage: 'scan' | 'scrape' | 'fallback' | 'done' | 'error';
+  stage: 'wrap' | 'scan' | 'scrape' | 'fallback' | 'done' | 'error';
   current: number;
   total: number;
   currentPath: string;

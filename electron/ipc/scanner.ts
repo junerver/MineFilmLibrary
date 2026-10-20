@@ -40,6 +40,9 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
     const maxDepth = Number.isFinite(rawDepth)
       ? Math.max(MIN_SCAN_MAX_DEPTH, Math.min(MAX_SCAN_MAX_DEPTH, Math.floor(rawDepth)))
       : DEFAULT_SCAN_MAX_DEPTH;
+    // 自动包装裸视频：默认关闭，设置键 scan_wrap_loose_videos='1' 时开启。
+    const wrapRow = getDb().prepare("SELECT value FROM settings WHERE key='scan_wrap_loose_videos'").get() as { value: string } | undefined;
+    const wrapLoose = wrapRow?.value === '1';
 
     let errorMessage: string | null = null;
     try {
@@ -53,8 +56,13 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
         rootPath: root.path,
         defaultType: defaultType as 'actor' | 'genre',
         maxDepth,
+        wrapLoose,
         onProgress,
       });
+      if (scanResult.wrap) {
+        const w = scanResult.wrap;
+        log.info(TAG, `wrap loose root=${root.path} seen=${w.loose_seen} into_existing=${w.into_existing} into_new=${w.into_new} skipped=${w.skipped} failed=${w.failed}`);
+      }
       const { addedFilms, ...scanStats } = scanResult;
       const pendingFilms = listPendingFilmScrapes(getDb(), root.path);
       const addedIds = new Set(addedFilms.map(film => film.filmId));
@@ -89,6 +97,11 @@ export function registerScannerIpc(progressKey = 'scanner:progress') {
       });
       const stats = {
         ...scanStats,
+        wrap_seen: scanResult.wrap?.loose_seen ?? 0,
+        wrap_into_existing: scanResult.wrap?.into_existing ?? 0,
+        wrap_into_new: scanResult.wrap?.into_new ?? 0,
+        wrap_skipped: scanResult.wrap?.skipped ?? 0,
+        wrap_failed: scanResult.wrap?.failed ?? 0,
         scrape_candidates: pendingFilms.length,
         scrape_resumed: scrapeResumed,
         scrape_deferred: scrapeDeferred,

@@ -123,6 +123,13 @@ WAL mode + `foreign_keys=ON`. Tests: use `openDbForTest` + retrying temp-dir cle
 - **DB 与 UI 永远只存/显示虚拟（库）盘符**；磁盘访问必须在主进程入口经 `electron/util/driveMap.ts` 的 `virtualToReal` / `realToVirtual` 换算。已接入：`runScan`（真实盘遍历、虚拟盘入库）、`ipc/files.ts`（stat/open/restat/rename/trash）、`ipc/cover.ts`（读图）、`ipc/scrape.ts`（目录判断/写图/restat）。
 - 新增任何 `fs` / `shell` 调用如果路径来自 `films.abs_path` / `film_files.abs_path` / `scan_roots.path`，必须先过 `virtualToReal`；扫描/清单结果入库前必须过 `realToVirtual`。无映射时两者都是恒等函数，不影响既有行为。
 
+### Loose video wrapping (自动包装裸视频)
+
+- Setting key `scan_wrap_loose_videos`（默认 `0` 关闭）。UI 在设置 → 扫描 →「解析策略」勾选；`runScan` 通过 `ScannerOptions.wrapLoose` 开启。
+- 开启后扫描遍历**之前**执行 `electron/scanner/wrapLoose.ts` 的 `wrapLooseVideos`（真实路径），把非影片目录（扫描根、演员/题材等分组目录）**第一层**散落的视频文件按编号移入影片目录；影片目录内部故意不碰。新建目录因此能被同一次 `walkFilmDirs` 发现入库。
+- 编号提取与目录匹配规则与参考脚本 `wrap-loose-videos.ps1` 一致：字母开头、`-数字` 结尾（支持 FC2-PPV-xxx）；已有目录按「编号+边界符」大小写不敏感前缀匹配（HMN-260 命中 HMN-260-C，不命中 HMN-2600）；无编号、多候选、目标重名一律跳过不动；只移动不重命名、绝不覆盖同名文件。
+- 递归层级与 walker 完全一致（`maxDepth`、`looksLikeFilmDir`），保证包装出的目录落在可发现层级。`ScanProgress` 的 `wrap` 阶段先于 `scan` 阶段触发。
+
 ### Scrape settings (settings table keys)
 
 | Key | Default | Meaning |
@@ -207,6 +214,7 @@ Before claiming done:
 | Concern | Where |
 |---------|--------|
 | Scan pipeline | `electron/scanner/index.ts`, `walker.ts`, `parser.ts` |
+| Loose video wrapping (自动包装裸视频) | `electron/scanner/wrapLoose.ts`（设置键 `scan_wrap_loose_videos`） |
 | Drive letter mapping (盘符映射) | `electron/util/driveMap.ts`（设置键 `drive_mappings`） |
 | Actor alias merge | `electron/db/queries.ts` (`upsertActorByName`, `mergeActors`, `convertActorToTag`) |
 | Library list/sort/filter | `electron/ipc/library.ts`, `src/pages/LibraryPage.tsx` |
